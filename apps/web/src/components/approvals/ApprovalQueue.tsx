@@ -938,11 +938,13 @@ export function ApprovalQueue({
         // Mapa do mês: índice da fila, não substituto dela. Responde "quem está
         // pendente e desde quando" antes de qualquer scroll; clicar numa linha
         // aplica o MESMO filtro de consultor que o painel abaixo já expunha.
+        // Recebe a fila JÁ FILTRADA (período, projeto, consultor e demais
+        // filtros), para o mapa e a lista nunca contarem histórias diferentes.
         <section className="space-y-3">
           <SectionLabel aside={heatmapMonthLabel}>Mapa do mês</SectionLabel>
           <SectionPanel variant="quiet">
             <MonthHeatmap
-              items={byKind}
+              items={filtered}
               month={heatmapMonth}
               selectedConsultant={filters.consultant}
               onSelectConsultant={(name) =>

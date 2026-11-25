@@ -141,7 +141,7 @@ export function MonthHeatmap({
   if (rows.length === 0) {
     return (
       <p className={cn("px-5 py-8 text-center text-sm text-soft", className)}>
-        Nenhum item enviado neste mês.
+        Nenhum item enviado neste mês para os filtros aplicados.
       </p>
     );
   }
