@@ -901,6 +901,38 @@ export function ApprovalQueue({
         )
       ) : null}
 
+      {/* Filtros do dia a dia no TOPO: eles recortam tudo abaixo — contadores,
+          mapa do mês e a fila. */}
+      {quiet ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto] lg:items-end">
+          {startField}
+          {endField}
+          {projectField}
+          {consultantField}
+          <ActionButton
+            variant="secondary"
+            size="sm"
+            disabled={
+              !filters.project &&
+              !filters.consultant &&
+              !filters.startDate &&
+              !filters.endDate
+            }
+            onClick={() =>
+              setFilters((current) => ({
+                ...current,
+                project: "",
+                consultant: "",
+                startDate: "",
+                endDate: "",
+              }))
+            }
+          >
+            Limpar
+          </ActionButton>
+        </div>
+      ) : null}
+
       {quiet ? (
         // A contagem é a primeira leitura do gestor; na direção quiet ela sai
         // do tamanho de etiqueta de tabela e vira pílula com o número em
@@ -961,36 +993,6 @@ export function ApprovalQueue({
           estado, e o disclosure abre já preenchido quando um filtro veio
           da URL, para o gestor nunca ver uma lista filtrada sem saber por
           quê. Fora do modo quiet, `open` fixo reproduz a tela clássica. */}
-      {quiet ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto] lg:items-end">
-          {startField}
-          {endField}
-          {projectField}
-          {consultantField}
-          <ActionButton
-            variant="secondary"
-            size="sm"
-            disabled={
-              !filters.project &&
-              !filters.consultant &&
-              !filters.startDate &&
-              !filters.endDate
-            }
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                project: "",
-                consultant: "",
-                startDate: "",
-                endDate: "",
-              }))
-            }
-          >
-            Limpar
-          </ActionButton>
-        </div>
-      ) : null}
-
       <details
         open={!quiet || hasActiveFilters}
         className={quiet ? "group" : undefined}
