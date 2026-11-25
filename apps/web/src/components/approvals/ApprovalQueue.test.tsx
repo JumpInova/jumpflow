@@ -538,4 +538,18 @@ describe("ApprovalQueue", () => {
     );
     await screen.findByText(/Nenhum lançamento decidido/);
   });
+
+  it("applies the visible filters to the month map (project/consultant/period)", () => {
+    const items = [
+      makeItem({ id: "a", consultantName: "Ana", projectName: "P1", submittedAt: "2026-06-10T12:00:00Z" }),
+      makeItem({ id: "b", consultantName: "Bruno", projectName: "P2", submittedAt: "2026-06-11T12:00:00Z" }),
+    ];
+    renderQueue({
+      items,
+      presentation: "quiet",
+      initialFilters: { startDate: "2026-06-01", endDate: "2026-06-30", project: "P1" },
+    });
+    expect(screen.getAllByTitle(/^Ana · dia/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByTitle(/^Bruno · dia/)).toHaveLength(0);
+  });
 });
