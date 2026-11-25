@@ -79,12 +79,16 @@ function refineClock<T extends z.ZodTypeAny>(schema: T): T {
   }) as unknown as T;
 }
 
+/** Limite de caracteres da descrição de atividades (lançamentos de horas). */
+export const TIME_ENTRY_DESCRIPTION_MAX_LENGTH = 50_000;
+const descriptionMaxMessage = "Descrição deve ter no máximo 50.000 caracteres.";
+
 /** Description is now mandatory for every entry. */
 const descriptionSchema = z
   .string()
   .trim()
   .min(1, "Descrição é obrigatória.")
-  .max(500, "Descrição deve ter no máximo 500 caracteres.");
+  .max(TIME_ENTRY_DESCRIPTION_MAX_LENGTH, descriptionMaxMessage);
 
 /**
  * Fator de remuneração do lançamento (melhoria #2). O consultor é sempre pago
@@ -265,7 +269,7 @@ export const copyPreviousWeekInputSchema = z.object({
   description: z
     .string()
     .trim()
-    .max(500, "Descrição deve ter no máximo 500 caracteres.")
+    .max(TIME_ENTRY_DESCRIPTION_MAX_LENGTH, descriptionMaxMessage)
     .optional(),
   ...onBehalfField,
 });
