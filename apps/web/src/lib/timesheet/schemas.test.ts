@@ -96,11 +96,20 @@ describe("timeEntryInputSchema", () => {
     ).toBe(false);
   });
 
-  it("rejects descriptions longer than 500 characters", () => {
+  it("accepts descriptions up to 50.000 characters", () => {
     expect(
       timeEntryInputSchema.safeParse({
         ...validEntry,
-        description: "x".repeat(501),
+        description: "x".repeat(50_000),
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects descriptions longer than 50.000 characters", () => {
+    expect(
+      timeEntryInputSchema.safeParse({
+        ...validEntry,
+        description: "x".repeat(50_001),
       }).success,
     ).toBe(false);
   });
