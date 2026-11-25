@@ -55,6 +55,7 @@ import {
   type ApprovalStatus,
 } from "@/lib/mock-data/approvals";
 import { ApprovalStatusBadge } from "./ApprovalStatusBadge";
+import { EntryDescriptionHover } from "./EntryDescriptionHover";
 import { SearchableSelect } from "@/components/ui/SearchableSelect";
 
 type Tab = "PENDING" | "HISTORY";
@@ -425,11 +426,13 @@ export function ApprovalQueue({
       [
         filters.status !== "ALL",
         Boolean(filters.client),
-        Boolean(filters.project),
-        Boolean(filters.consultant),
+        // Na direção quiet, projeto e consultor vivem na barra sempre visível,
+        // então não contam para o disclosure "Filtros".
+        !quiet && Boolean(filters.project),
+        !quiet && Boolean(filters.consultant),
         Boolean(filters.activity),
       ].filter(Boolean).length,
-    [filters],
+    [filters, quiet],
   );
   const hasActiveFilters = activeFilterCount > 0;
   const pending = useMemo(() => pendingApprovals(filtered), [filtered]);
@@ -678,6 +681,70 @@ export function ApprovalQueue({
   }
 
   /**
+   * Decisão PARCIAL de um envio de horas (ex.: semana): alguns dias aprovados,
+   * outros reprovados. Reusa `decideHours` com subconjuntos de entryIds — o
+   * servidor reautoriza cada lançamento, exige justificativa na reprovação e
+   * audita como em qualquer decisão. Os dias não decididos (se houver) seguem
+   * pendentes na fila.
+   */
+  function decidePartial(
+    approvedIds: string[],
+    rejectedIds: string[],
+    comment: string,
+  ) {
+    startTransition(async () => {
+      let approved = 0;
+      let rejected = 0;
+      let alreadyDecided = 0;
+      const errors: string[] = [];
+
+      if (approvedIds.length > 0) {
+        const result = await decideHours({
+          entryIds: approvedIds,
+          decision: "APPROVED",
+          comment: "",
+        });
+        if (result.ok) {
+          approved = result.data.decided;
+          alreadyDecided += result.data.alreadyDecided;
+        } else {
+          // Nada foi aplicado: não reprova o resto sozinho (o gestor decidiu o
+          // conjunto, não metade dele). Corrige e reaplica.
+          notify(
+            "warning",
+            `Nenhum lançamento decidido. ${result.message}`,
+          );
+          return;
+        }
+      }
+      if (rejectedIds.length > 0) {
+        const result = await decideHours({
+          entryIds: rejectedIds,
+          decision: "REJECTED",
+          comment,
+        });
+        if (result.ok) {
+          rejected = result.data.decided;
+          alreadyDecided += result.data.alreadyDecided;
+        } else {
+          errors.push(result.message);
+        }
+      }
+
+      const summary = `${approved} lançamento(s) aprovado(s) e ${rejected} reprovado(s).`;
+      const suffix =
+        alreadyDecided > 0
+          ? ` ${alreadyDecided} já havia(m) sido decidido(s).`
+          : "";
+      if (errors.length > 0) {
+        notify("warning", `${summary} Falha: ${errors[0]}`);
+        return;
+      }
+      notify(rejected > 0 ? "info" : "success", `${summary}${suffix}`);
+    });
+  }
+
+  /**
    * Define "Faturável" de UM lançamento (por dia). Autorização/regra vivem no
    * servidor (setEntryBillable); ao marcar NÃO faturável com anexo, sobe o
    * comprovante APÓS a mudança (mesmo padrão do apontamento). A rota revalida no
@@ -720,6 +787,98 @@ export function ApprovalQueue({
       );
     });
   }
+
+  // Campos de período/projeto/consultor: na direção quiet ficam SEMPRE
+  // visíveis numa barra própria (são os recortes do dia a dia do gestor); os
+  // demais filtros seguem no disclosure. Na clássica, tudo no painel.
+  const startField = (
+    <div>
+      <label htmlFor="approval-start" className="mb-1 block text-xs font-semibold text-medium">
+        Início
+      </label>
+      <input
+        id="approval-start"
+        type="date"
+        value={filters.startDate}
+        onChange={(event) =>
+          setFilters((current) => ({ ...current, startDate: event.target.value }))
+        }
+        className={cn(
+          "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
+          focusRing,
+        )}
+      />
+    </div>
+  );
+  const endField = (
+    <div>
+      <label htmlFor="approval-end" className="mb-1 block text-xs font-semibold text-medium">
+        Fim
+      </label>
+      <input
+        id="approval-end"
+        type="date"
+        value={filters.endDate}
+        onChange={(event) =>
+          setFilters((current) => ({ ...current, endDate: event.target.value }))
+        }
+        className={cn(
+          "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
+          focusRing,
+        )}
+      />
+    </div>
+  );
+  const projectField = (
+    <div>
+      <label htmlFor="approval-project" className="mb-1 block text-xs font-semibold text-medium">
+        Projeto
+      </label>
+      <SearchableSelect
+        id="approval-project"
+        value={filters.project}
+        onChange={(event) =>
+          setFilters((current) => ({ ...current, project: event.target.value }))
+        }
+        className={cn(
+          "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
+          focusRing,
+        )}
+      >
+        <option value="">Todos</option>
+        {filterOptions.projects.map((project) => (
+          <option key={project} value={project}>
+            {project}
+          </option>
+        ))}
+      </SearchableSelect>
+    </div>
+  );
+  const consultantField = (
+    <div>
+      <label htmlFor="approval-consultant" className="mb-1 block text-xs font-semibold text-medium">
+        Consultor
+      </label>
+      <SearchableSelect
+        id="approval-consultant"
+        value={filters.consultant}
+        onChange={(event) =>
+          setFilters((current) => ({ ...current, consultant: event.target.value }))
+        }
+        className={cn(
+          "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
+          focusRing,
+        )}
+      >
+        <option value="">Todos</option>
+        {filterOptions.consultants.map((consultant) => (
+          <option key={consultant} value={consultant}>
+            {consultant}
+          </option>
+        ))}
+      </SearchableSelect>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -800,6 +959,36 @@ export function ApprovalQueue({
           estado, e o disclosure abre já preenchido quando um filtro veio
           da URL, para o gestor nunca ver uma lista filtrada sem saber por
           quê. Fora do modo quiet, `open` fixo reproduz a tela clássica. */}
+      {quiet ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto] lg:items-end">
+          {startField}
+          {endField}
+          {projectField}
+          {consultantField}
+          <ActionButton
+            variant="secondary"
+            size="sm"
+            disabled={
+              !filters.project &&
+              !filters.consultant &&
+              !filters.startDate &&
+              !filters.endDate
+            }
+            onClick={() =>
+              setFilters((current) => ({
+                ...current,
+                project: "",
+                consultant: "",
+                startDate: "",
+                endDate: "",
+              }))
+            }
+          >
+            Limpar
+          </ActionButton>
+        </div>
+      ) : null}
+
       <details
         open={!quiet || hasActiveFilters}
         className={quiet ? "group" : undefined}
@@ -832,40 +1021,8 @@ export function ApprovalQueue({
             }
           >
             <div className="grid gap-4 px-5 py-4 sm:grid-cols-2 lg:grid-cols-5">
-              <div>
-                <label htmlFor="approval-start" className="mb-1 block text-xs font-semibold text-medium">
-                  Início
-                </label>
-                <input
-                  id="approval-start"
-                  type="date"
-                  value={filters.startDate}
-                  onChange={(event) =>
-                    setFilters((current) => ({ ...current, startDate: event.target.value }))
-                  }
-                  className={cn(
-                    "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
-                    focusRing,
-                  )}
-                />
-              </div>
-              <div>
-                <label htmlFor="approval-end" className="mb-1 block text-xs font-semibold text-medium">
-                  Fim
-                </label>
-                <input
-                  id="approval-end"
-                  type="date"
-                  value={filters.endDate}
-                  onChange={(event) =>
-                    setFilters((current) => ({ ...current, endDate: event.target.value }))
-                  }
-                  className={cn(
-                    "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
-                    focusRing,
-                  )}
-                />
-              </div>
+              {quiet ? null : startField}
+              {quiet ? null : endField}
               <div>
                 <label htmlFor="approval-status" className="mb-1 block text-xs font-semibold text-medium">
                   Status
@@ -914,53 +1071,9 @@ export function ApprovalQueue({
                   ))}
                 </SearchableSelect>
               </div>
-              <div>
-                <label htmlFor="approval-project" className="mb-1 block text-xs font-semibold text-medium">
-                  Projeto
-                </label>
-                <SearchableSelect
-                  id="approval-project"
-                  value={filters.project}
-                  onChange={(event) =>
-                    setFilters((current) => ({ ...current, project: event.target.value }))
-                  }
-                  className={cn(
-                    "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
-                    focusRing,
-                  )}
-                >
-                  <option value="">Todos</option>
-                  {filterOptions.projects.map((project) => (
-                    <option key={project} value={project}>
-                      {project}
-                    </option>
-                  ))}
-                </SearchableSelect>
-              </div>
-              <div>
-                <label htmlFor="approval-consultant" className="mb-1 block text-xs font-semibold text-medium">
-                  Consultor
-                </label>
-                <SearchableSelect
-                  id="approval-consultant"
-                  value={filters.consultant}
-                  onChange={(event) =>
-                    setFilters((current) => ({ ...current, consultant: event.target.value }))
-                  }
-                  className={cn(
-                    "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-strong",
-                    focusRing,
-                  )}
-                >
-                  <option value="">Todos</option>
-                  {filterOptions.consultants.map((consultant) => (
-                    <option key={consultant} value={consultant}>
-                      {consultant}
-                    </option>
-                  ))}
-                </SearchableSelect>
-              </div>
-              <div className="sm:col-span-2 lg:col-span-4">
+              {quiet ? null : projectField}
+              {quiet ? null : consultantField}
+              <div className={quiet ? "sm:col-span-2" : "sm:col-span-2 lg:col-span-4"}>
                 <label htmlFor="approval-activity" className="mb-1 block text-xs font-semibold text-medium">
                   Atividade
                 </label>
@@ -1187,6 +1300,7 @@ export function ApprovalQueue({
                   canDecide={tab === "PENDING"}
                   onApprove={(id, comment) => decide(id, "APPROVED", comment)}
                   onReject={(id, comment) => decide(id, "REJECTED", comment)}
+                  onDecidePartial={decidePartial}
                   canEditBillable={canEditBillable}
                   attachmentsAvailable={billableAttachmentsAvailable}
                   onSetBillable={setBillable}
@@ -1224,6 +1338,12 @@ interface ApprovalRowProps {
   canDecide: boolean;
   onApprove: (id: string, comment: string) => void;
   onReject: (id: string, comment: string) => void;
+  /** Decisão por dia (aprovação parcial) de um envio de horas com vários dias. */
+  onDecidePartial?: (
+    approvedIds: string[],
+    rejectedIds: string[],
+    comment: string,
+  ) => void;
   canEditBillable: boolean;
   attachmentsAvailable: boolean;
   onSetBillable: (
@@ -1256,6 +1376,7 @@ function ApprovalRow({
   canDecide,
   onApprove,
   onReject,
+  onDecidePartial,
   canEditBillable,
   attachmentsAvailable,
   onSetBillable,
@@ -1289,8 +1410,23 @@ function ApprovalRow({
 
   const detailId = `approval-detail-${item.id}`;
   const rejectFieldId = `approval-reject-${item.id}`;
+  const partialId = `approval-partial-${item.id}`;
   const isExpense = item.type === "EXPENSE";
   const hasEntries = !isExpense && Boolean(item.entries?.length);
+  // Aprovação parcial: envio real (db) de horas, pendente, com 2+ dias. Cada
+  // dia vira aprovar/reprovar; o servidor decide os subconjuntos.
+  const canDecidePartial =
+    canDecide &&
+    Boolean(onDecidePartial) &&
+    item.source === "db" &&
+    item.status === "PENDING" &&
+    (item.entries?.length ?? 0) > 1;
+  const [partialOpen, setPartialOpen] = useState(false);
+  const [dayDecisions, setDayDecisions] = useState<
+    Record<string, "APPROVED" | "REJECTED">
+  >({});
+  const [partialComment, setPartialComment] = useState("");
+  const [partialError, setPartialError] = useState(false);
   // Marcação de "Faturável" por dia: só para HOURS reais (db), com gestão. Cada
   // lançamento (dia) tem seu próprio toggle; o servidor é a autoridade.
   const billableEntries =
@@ -1300,6 +1436,52 @@ function ApprovalRow({
 
   function handleApprove() {
     onApprove(item.id, "");
+  }
+
+  /** Decisão do dia no modo parcial (default: aprovar). */
+  function dayDecision(entryId: string): "APPROVED" | "REJECTED" {
+    return dayDecisions[entryId] ?? "APPROVED";
+  }
+
+  function openPartial() {
+    setRejectOpen(false);
+    setPartialOpen(true);
+    setExpanded(true);
+    setDayDecisions({});
+    setPartialComment("");
+    setPartialError(false);
+  }
+
+  function cancelPartial() {
+    setPartialOpen(false);
+    setDayDecisions({});
+    setPartialComment("");
+    setPartialError(false);
+  }
+
+  const partialEntries = item.entries ?? [];
+  const partialRejected = partialEntries.filter(
+    (entry) => dayDecision(entry.id) === "REJECTED",
+  );
+  const partialApproved = partialEntries.filter(
+    (entry) => dayDecision(entry.id) === "APPROVED",
+  );
+  const sumHours = (list: ApprovalHoursEntry[]) =>
+    list.reduce((total, entry) => total + entry.hours, 0);
+
+  function confirmPartial() {
+    if (!onDecidePartial) return;
+    const comment = partialComment.trim();
+    if (partialRejected.length > 0 && comment.length === 0) {
+      setPartialError(true);
+      return;
+    }
+    onDecidePartial(
+      partialApproved.map((entry) => entry.id),
+      partialRejected.map((entry) => entry.id),
+      comment,
+    );
+    cancelPartial();
   }
 
   function openReject() {
@@ -1512,14 +1694,187 @@ function ApprovalRow({
                 disabled={busy}
                 aria-expanded={rejectOpen}
                 aria-controls={rejectOpen ? rejectFieldId : undefined}
-                onClick={() => (rejectOpen ? cancelReject() : openReject())}
+                onClick={() => {
+                  if (rejectOpen) {
+                    cancelReject();
+                  } else {
+                    cancelPartial();
+                    openReject();
+                  }
+                }}
               >
                 Reprovar
               </ActionButton>
+              {canDecidePartial ? (
+                <ActionButton
+                  variant="secondary"
+                  size={quiet ? "md" : "sm"}
+                  tactile={!quiet}
+                  icon={ListChecks}
+                  disabled={busy}
+                  aria-expanded={partialOpen}
+                  aria-controls={partialOpen ? partialId : undefined}
+                  title="Aprovar alguns lançamentos e reprovar outros"
+                  onClick={() => (partialOpen ? cancelPartial() : openPartial())}
+                >
+                  Por dia
+                </ActionButton>
+              ) : null}
             </div>
           ) : null}
         </div>
       </div>
+
+      {canDecidePartial && partialOpen ? (
+        <div id={partialId} className="pb-4 pl-12 pr-5">
+          <div className="rounded-md border border-border bg-surface-muted/30 p-3">
+            <p className="text-xs font-semibold text-medium">Decisão por lançamento</p>
+            <p className="mb-2 text-xs text-soft">
+              Escolha aprovar ou reprovar cada lançamento. Passe o mouse sobre
+              ele para ler a descrição da atividade.
+            </p>
+            <ul className="divide-y divide-border">
+              {partialEntries.map((entry) => {
+                const decision = dayDecision(entry.id);
+                const dateLabel = shortDate(entry.date);
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2"
+                  >
+                    <EntryDescriptionHover
+                      description={entry.description}
+                      title={`${dateLabel} · ${entry.activityLabel}`}
+                      className="min-w-0"
+                    >
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-strong">
+                        <span>
+                          {dateLabel} ·{" "}
+                          <span className="tabular-nums">
+                            {formatHours(entry.hours)}
+                          </span>
+                        </span>
+                        {entry.description ? (
+                          <FileText
+                            aria-hidden="true"
+                            className="size-3.5 shrink-0 text-soft"
+                          />
+                        ) : null}
+                      </span>
+                      <span className="block truncate text-xs text-soft">
+                        {entry.activityLabel}
+                      </span>
+                    </EntryDescriptionHover>
+                    <div
+                      role="radiogroup"
+                      aria-label={`Decisão de ${dateLabel} · ${entry.activityLabel}`}
+                      className="inline-flex shrink-0 overflow-hidden rounded-md border border-border"
+                    >
+                      {(["APPROVED", "REJECTED"] as const).map((value) => {
+                        const checked = decision === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={checked}
+                            disabled={busy}
+                            onClick={() => {
+                              setDayDecisions((current) => ({
+                                ...current,
+                                [entry.id]: value,
+                              }));
+                            }}
+                            className={cn(
+                              "inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold transition-colors",
+                              focusRing,
+                              checked
+                                ? value === "APPROVED"
+                                  ? "bg-success-soft text-success"
+                                  : "bg-danger-soft text-danger"
+                                : "bg-surface text-medium hover:bg-surface-muted",
+                            )}
+                          >
+                            {value === "APPROVED" ? (
+                              <Check aria-hidden="true" className="size-3.5" />
+                            ) : (
+                              <X aria-hidden="true" className="size-3.5" />
+                            )}
+                            {value === "APPROVED" ? "Aprovar" : "Reprovar"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className={cn("mt-2 text-xs text-medium", opsNum)}>
+              {partialApproved.length} aprovado(s) ·{" "}
+              {formatHours(sumHours(partialApproved))} —{" "}
+              {partialRejected.length} reprovado(s) ·{" "}
+              {formatHours(sumHours(partialRejected))}
+            </p>
+            {partialRejected.length > 0 ? (
+              <div className="mt-2">
+                <label
+                  htmlFor={`${partialId}-comment`}
+                  className="mb-1 block text-xs font-semibold text-medium"
+                >
+                  Justificativa da reprovação{" "}
+                  <span className="font-normal text-soft">
+                    (obrigatória, vale para os lançamentos reprovados)
+                  </span>
+                </label>
+                <textarea
+                  id={`${partialId}-comment`}
+                  value={partialComment}
+                  onChange={(event) => {
+                    setPartialComment(event.target.value);
+                    if (partialError && event.target.value.trim().length > 0) {
+                      setPartialError(false);
+                    }
+                  }}
+                  rows={2}
+                  aria-invalid={partialError}
+                  placeholder="Descreva o motivo da reprovação (fica na trilha de auditoria)."
+                  className={cn(
+                    "w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm text-strong placeholder:text-soft",
+                    focusRingInput,
+                    partialError && "border-danger",
+                  )}
+                />
+                {partialError ? (
+                  <p className="mt-1 text-xs font-medium text-danger">
+                    Informe uma justificativa para os lançamentos reprovados.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="mt-2 flex gap-2">
+              <ActionButton
+                variant="primary"
+                size="sm"
+                tactile={!quiet}
+                icon={Check}
+                disabled={busy}
+                onClick={confirmPartial}
+              >
+                Aplicar decisão
+              </ActionButton>
+              <ActionButton
+                variant="secondary"
+                size="sm"
+                tactile={!quiet}
+                disabled={busy}
+                onClick={cancelPartial}
+              >
+                Cancelar
+              </ActionButton>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {canDecide && rejectOpen ? (
         <div id={rejectFieldId} className="pb-4 pl-12 pr-5">
@@ -1680,12 +2035,22 @@ function ApprovalRow({
                     >
                       <div className="min-w-0">
                         <p className="flex items-center gap-1.5 text-sm font-medium text-strong">
-                          <span>
+                          <EntryDescriptionHover
+                            description={entry.description}
+                            title={`${shortDate(entry.date)} · ${entry.activityLabel}`}
+                            className="inline-flex items-center gap-1.5"
+                          >
                             {shortDate(entry.date)} ·{" "}
                             <span className="tabular-nums">
                               {formatHours(entry.hours)}
                             </span>
-                          </span>
+                            {entry.description ? (
+                              <FileText
+                                aria-hidden="true"
+                                className="size-3.5 shrink-0 text-soft"
+                              />
+                            ) : null}
+                          </EntryDescriptionHover>
                           <EntryExceptionAlert
                             exceptions={entry.exceptions}
                             dateLabel={shortDate(entry.date)}
@@ -1730,12 +2095,22 @@ function ApprovalRow({
                     >
                       <div className="min-w-0">
                         <p className="flex items-center gap-1.5 text-sm font-medium text-strong">
-                          <span>
+                          <EntryDescriptionHover
+                            description={entry.description}
+                            title={`${shortDate(entry.date)} · ${entry.activityLabel}`}
+                            className="inline-flex items-center gap-1.5"
+                          >
                             {shortDate(entry.date)} ·{" "}
                             <span className="tabular-nums">
                               {formatHours(entry.hours)}
                             </span>
-                          </span>
+                            {entry.description ? (
+                              <FileText
+                                aria-hidden="true"
+                                className="size-3.5 shrink-0 text-soft"
+                              />
+                            ) : null}
+                          </EntryDescriptionHover>
                           <EntryExceptionAlert
                             exceptions={entry.exceptions}
                             dateLabel={shortDate(entry.date)}

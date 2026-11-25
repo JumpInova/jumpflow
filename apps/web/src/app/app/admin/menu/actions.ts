@@ -7,7 +7,7 @@ import { requireRole } from "@/lib/auth/guards";
 import { recordAuditEvent } from "@/lib/db/audit";
 import { isDatabaseConfigured } from "@/lib/db/config";
 import { resolveDbUser } from "@/lib/db/users";
-import { primaryNavigation } from "@/lib/navigation";
+import { navOrderKeys } from "@/lib/navigation";
 
 /**
  * Server actions for the primary-menu ordering screen (`/app/admin/menu`, P28).
@@ -15,14 +15,18 @@ import { primaryNavigation } from "@/lib/navigation";
  */
 const ROUTE = "/app/admin/menu";
 
-/** Valid nav keys = the hrefs of the current primary catalog (anti-injection). */
+/**
+ * Valid nav keys = hrefs of the primary catalog, of every group child
+ * (including Administração) and the group keys themselves (anti-injection).
+ */
 function validKeys(): Set<string> {
-  return new Set(primaryNavigation.map((item) => item.href));
+  return navOrderKeys();
 }
 
 const saveOrderSchema = z.object({
-  // Ordered list of nav item keys (hrefs). Index = position.
-  keys: z.array(z.string().min(1)).min(1),
+  // Ordered list of nav keys (item hrefs and `group:*` keys), flattened as
+  // "group key, then its children". Index = position.
+  keys: z.array(z.string().min(1).max(200)).min(1).max(500),
 });
 
 export type SaveOrderInput = z.infer<typeof saveOrderSchema>;

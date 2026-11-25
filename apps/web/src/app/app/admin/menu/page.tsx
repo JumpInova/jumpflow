@@ -21,7 +21,7 @@ export default async function MenuOrderPage() {
     <PageHeader
       eyebrow="Administração"
       title="Ordem do Menu"
-      description="Defina a ordem dos itens do menu principal. Vale para toda a organização — deixe lado a lado o que sua operação usa junto (ex.: Horas, Aprovações, Skills, Certificados)."
+      description="Defina a ordem dos itens e grupos do menu principal e das telas dentro de cada grupo. Vale para toda a organização — deixe lado a lado o que sua operação usa junto."
     />
   );
 

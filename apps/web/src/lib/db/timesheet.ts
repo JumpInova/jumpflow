@@ -665,6 +665,24 @@ const HISTORY_LIMIT = 50;
  *   summed hours and the oldest submittedAt;
  * - history: latest TIME_ENTRY approvals (manual and automatic).
  */
+/**
+ * Teto da descrição levada à fila de aprovação (hover do lançamento). A
+ * descrição aceita até 50.000 caracteres; a fila carrega todos os dias
+ * pendentes de uma vez, então mandamos um recorte generoso e não o texto
+ * inteiro de cada dia.
+ */
+const APPROVAL_DESCRIPTION_MAX = 1500;
+
+function approvalDescriptionPreview(
+  description: string | null | undefined,
+): string | undefined {
+  const text = description?.trim();
+  if (!text) return undefined;
+  return text.length > APPROVAL_DESCRIPTION_MAX
+    ? `${text.slice(0, APPROVAL_DESCRIPTION_MAX).trimEnd()}…`
+    : text;
+}
+
 export async function listHoursApprovalItems(
   scope: HoursApprovalScope = {},
 ): Promise<ApprovalItem[]> {
@@ -727,6 +745,7 @@ export async function listHoursApprovalItems(
       date: toIsoDate(entry.date),
       hours: Number(entry.hours),
       activityLabel: activityLabelFor(entry.activityType),
+      description: approvalDescriptionPreview(entry.description),
       billable: entry.billable,
       nonBillableReason: entry.nonBillableReason ?? undefined,
     });
@@ -817,6 +836,7 @@ export async function listHoursApprovalItems(
           date: toIsoDate(entry.date),
           hours: Number(entry.hours),
           activityLabel: activityLabelFor(entry.activityType),
+          description: approvalDescriptionPreview(entry.description),
           billable: entry.billable,
           nonBillableReason: entry.nonBillableReason ?? undefined,
         },
