@@ -98,6 +98,11 @@ export interface NavItemDef {
  * (`adminGroupedNavigation`).
  */
 export interface NavGroupDef {
+  /**
+   * Chave estável do grupo (ex.: `group:operacao`), usada pela ordem persistida
+   * do menu (`NavigationOrder.key`). Nunca é uma rota.
+   */
+  key: string;
   label: string;
   icon: LucideIcon;
   children: NavItemDef[];
@@ -703,6 +708,7 @@ export const primaryNavigation: NavItemDef[] =
  */
 export const financeGroupedNavigation: NavGroupDef[] = [
   {
+    key: "group:contas-a-receber",
     label: "Contas a Receber",
     icon: Wallet,
     children: [
@@ -732,6 +738,7 @@ export const financeGroupedNavigation: NavGroupDef[] = [
     ],
   },
   {
+    key: "group:contas-a-pagar",
     label: "Contas a Pagar",
     icon: Banknote,
     children: [
@@ -842,6 +849,7 @@ export function visibleFinanceGroups(
  * rótulos dos filhos, para não gerar ambiguidade nem ruído.
  */
 interface PrimaryNavGroupSpec {
+  key: string;
   label: string;
   icon: LucideIcon;
   /** Hrefs (na ordem desejada) dos itens de `primaryNavigation` deste grupo. */
@@ -851,12 +859,14 @@ interface PrimaryNavGroupSpec {
 const primaryNavGroupSpecs: PrimaryNavGroupSpec[] = [
   {
     // Estrutura comercial/entrega: onde o trabalho é definido e vendido.
+    key: "group:projetos-clientes",
     label: "Projetos & Clientes",
     icon: FolderKanban,
     hrefs: ["/app/projetos", "/app/clientes", "/app/comercial"],
   },
   {
     // Ciclo operacional: acompanhar, aprovar e fechar o mês.
+    key: "group:operacao",
     label: "Operação",
     icon: Compass,
     hrefs: [
@@ -868,6 +878,7 @@ const primaryNavGroupSpecs: PrimaryNavGroupSpec[] = [
   },
   {
     // Leitura/decisão: relatórios e as análises determinísticas de IA.
+    key: "group:relatorios-analises",
     label: "Relatórios & Análises",
     icon: BarChart3,
     hrefs: [
@@ -893,6 +904,7 @@ const primaryNavByHref = new Map(
  */
 export const primaryGroupedNavigation: NavGroupDef[] = primaryNavGroupSpecs
   .map((spec) => ({
+    key: spec.key,
     label: spec.label,
     icon: spec.icon,
     children: spec.hrefs
@@ -929,6 +941,7 @@ export function visiblePrimaryGroups(
  * gate — a visibilidade por usuário é aplicada em `visibleAdminGroup`.
  */
 export const adminGroupedNavigation: NavGroupDef = {
+  key: "group:administracao",
   label: "Administração",
   icon: Settings,
   children: adminNavigation,
@@ -972,6 +985,150 @@ export function applyNavOrder<T extends { href: string }>(
     return byOrder !== 0 ? byOrder : a.index - b.index;
   });
   return [...positioned, ...rest].map((entry) => entry.item);
+}
+
+// --- Árvore ordenada do menu (itens soltos + grupos) -------------------------
+
+/** Uma entrada de topo do menu primário: um link solto ou um grupo (dropdown). */
+export type OrderedNavEntry =
+  | { kind: "item"; key: string; item: NavItemDef }
+  | { kind: "group"; key: string; group: NavGroupDef };
+
+function hasOrderKey(
+  order: Readonly<Record<string, number>>,
+  key: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(order, key);
+}
+
+/**
+ * Filhos de um grupo na ordem persistida. A ordem interna só é aplicada quando
+ * a CHAVE DO GRUPO foi salva (tela de Ordem do Menu com grupos): uma ordem
+ * legada, salva quando a tela era uma lista plana, também posiciona hrefs que
+ * hoje vivem dentro de grupos — aplicá-la aqui reordenaria os grupos em
+ * silêncio no deploy.
+ */
+export function orderGroupChildren(
+  group: NavGroupDef,
+  order: Readonly<Record<string, number>>,
+): NavGroupDef {
+  if (!hasOrderKey(order, group.key)) return group;
+  return { ...group, children: applyNavOrder(group.children, order) };
+}
+
+/**
+ * Menu primário como árvore ordenada (P28 + grupos): itens soltos e grupos
+ * (Projetos & Clientes, Operação, Relatórios & Análises e — quando
+ * `financeGrouped` — Contas a Receber / Contas a Pagar), na ordem persistida.
+ * A Administração fica de fora: é sempre a última seção (ver
+ * `orderGroupChildren` para a ordem interna dela).
+ *
+ * Sem ordem salva, reproduz exatamente o menu anterior: itens soltos na ordem
+ * do catálogo, depois os grupos primários, depois os do Financeiro.
+ *
+ * Perfis SEM o menu financeiro agrupado veem as telas financeiras soltas. Se o
+ * admin posicionou os grupos financeiros, essas telas aparecem soltas NA
+ * POSIÇÃO do grupo (na ordem interna dele); com ordem legada, ficam onde
+ * sempre ficaram.
+ *
+ * Pura e sem visibilidade: o filtro por papel/matriz é aplicado depois
+ * (`visibleOrderedNav`).
+ */
+export function buildOrderedNav(
+  order: Readonly<Record<string, number>>,
+  options: { financeGrouped: boolean },
+): OrderedNavEntry[] {
+  const financeGroupOrdered = financeGroupedNavigation.some((group) =>
+    hasOrderKey(order, group.key),
+  );
+  const withFinanceGroups = options.financeGrouped || financeGroupOrdered;
+
+  type Sortable = { href: string; entry: OrderedNavEntry };
+  const sortable: Sortable[] = [
+    ...primaryNavigation
+      .filter((item) => !isPrimaryGroupedHref(item.href))
+      .filter((item) => !withFinanceGroups || !isFinanceGroupedHref(item.href))
+      .map((item) => ({
+        href: item.href,
+        entry: { kind: "item", key: item.href, item } as OrderedNavEntry,
+      })),
+    ...primaryGroupedNavigation.map((group) => ({
+      href: group.key,
+      entry: { kind: "group", key: group.key, group } as OrderedNavEntry,
+    })),
+    ...(withFinanceGroups ? financeGroupedNavigation : []).map((group) => ({
+      href: group.key,
+      entry: { kind: "group", key: group.key, group } as OrderedNavEntry,
+    })),
+  ];
+
+  const result: OrderedNavEntry[] = [];
+  for (const { entry } of applyNavOrder(sortable, order)) {
+    if (entry.kind === "item") {
+      result.push(entry);
+      continue;
+    }
+    const group = orderGroupChildren(entry.group, order);
+    const isFinance = financeGroupedNavigation.some((g) => g.key === group.key);
+    if (isFinance && !options.financeGrouped) {
+      // Achata o grupo financeiro na posição dele, com os itens do menu plano
+      // (ex.: "Contas a Pagar" é aba, não item plano — some, como antes).
+      for (const child of group.children) {
+        const flat = primaryNavByHref.get(child.href);
+        if (flat) result.push({ kind: "item", key: flat.href, item: flat });
+      }
+      continue;
+    }
+    result.push({ kind: "group", key: group.key, group });
+  }
+  return result;
+}
+
+/**
+ * `buildOrderedNav` com a visibilidade do usuário aplicada: itens passam pelo
+ * mesmo gate do menu plano e grupos sem filho visível são descartados.
+ */
+export function visibleOrderedNav(
+  order: Readonly<Record<string, number>>,
+  roles: readonly RoleName[],
+  viewableCodes: ReadonlySet<string>,
+): OrderedNavEntry[] {
+  const canSee = (item: NavItemDef) =>
+    item.permissionCode
+      ? canSeeNavItemByMatrix(item, viewableCodes)
+      : canSeeNavItem(item, roles);
+  const result: OrderedNavEntry[] = [];
+  for (const entry of buildOrderedNav(order, {
+    financeGrouped: hasFinanceGroupedNav(roles),
+  })) {
+    if (entry.kind === "item") {
+      if (canSee(entry.item)) result.push(entry);
+      continue;
+    }
+    const children = entry.group.children.filter(canSee);
+    if (children.length > 0) {
+      result.push({ ...entry, group: { ...entry.group, children } });
+    }
+  }
+  return result;
+}
+
+/**
+ * Chaves aceitas pela ordem persistida: hrefs do menu primário, dos filhos de
+ * todos os grupos (inclusive Administração) e as chaves dos próprios grupos.
+ * O servidor descarta qualquer outra (anti-injeção).
+ */
+export function navOrderKeys(): Set<string> {
+  const groups = [
+    ...primaryGroupedNavigation,
+    ...financeGroupedNavigation,
+    adminGroupedNavigation,
+  ];
+  return new Set([
+    ...primaryNavigation.map((item) => item.href),
+    ...groups.map((group) => group.key),
+    ...groups.flatMap((group) => group.children.map((child) => child.href)),
+  ]);
 }
 
 /** Whether the current user's roles allow seeing a navigation item. */

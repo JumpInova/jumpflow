@@ -5,18 +5,11 @@ import Link from "next/link";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { appConfig } from "@/config/app";
 import {
-  applyNavOrder,
-  canSeeNavItem,
-  canSeeNavItemByMatrix,
   findActiveNav,
-  hasFinanceGroupedNav,
-  isFinanceGroupedHref,
-  isPrimaryGroupedHref,
-  primaryNavigation,
+  orderGroupChildren,
   resolveFinanceTabHref,
   visibleAdminGroup,
-  visibleFinanceGroups,
-  visiblePrimaryGroups,
+  visibleOrderedNav,
 } from "@/lib/navigation";
 import type { RoleName } from "@/lib/auth/roles";
 import { cn } from "@/lib/utils";
@@ -74,32 +67,18 @@ export function Sidebar({
     resolveFinanceTabHref(pathname, searchParams.get("tab")) ??
     findActiveNav(pathname)?.href;
   const viewable = new Set(viewableNavCodes);
-  // Items WITH a permissionCode are gated solely by the matrix (so admins can
-  // grant/revoke menu visibility from the Matriz de Permissões). Items WITHOUT
-  // one keep the legacy static role gate.
-  const canSee = (item: (typeof primaryNavigation)[number]) =>
-    item.permissionCode
-      ? canSeeNavItemByMatrix(item, viewable)
-      : canSeeNavItem(item, roles);
-  // Menu do Financeiro agrupado (dropdowns) só para FINANCE/ADMIN. Quando ativo,
-  // os itens financeiros saem da lista plana (viram filhos dos grupos) e os dois
-  // grupos são renderizados logo após o menu primário.
-  const grouped = hasFinanceGroupedNav(roles);
-  const financeGroups = grouped ? visibleFinanceGroups(roles, viewable) : [];
-  // Grupos genéricos do menu primário (QW-4): Projetos & Clientes, Operação e
-  // Relatórios & Análises. Valem para TODOS os perfis; cada filho mantém seu
-  // gate, então um grupo só aparece se tiver ≥1 filho visível para o usuário.
-  const primaryGroups = visiblePrimaryGroups(roles, viewable);
-  // Administração vira um dropdown recolhível (defaultOpen), no mesmo padrão.
-  const adminGroup = visibleAdminGroup(roles, viewable);
-  // Apply the persisted order first, then role/matrix visibility (order is a
-  // full-catalog concept; filtering after keeps the relative order intact).
-  // Itens que viraram filhos de um dropdown (primário sempre; financeiro só
-  // quando `grouped`) saem da lista plana para não duplicar.
-  const primaryItems = applyNavOrder(primaryNavigation, navOrder)
-    .filter(canSee)
-    .filter((item) => !isPrimaryGroupedHref(item.href))
-    .filter((item) => !grouped || !isFinanceGroupedHref(item.href));
+  // Árvore do menu na ordem persistida (P28 + grupos): itens soltos e grupos
+  // (Projetos & Clientes, Operação, Relatórios & Análises e, para
+  // FINANCE/ADMIN, Contas a Receber/Pagar) intercalados conforme a tela
+  // Ordem do Menu. Itens com permissionCode são gateados só pela matriz; os
+  // demais, pelo gate de papéis. Grupos sem filho visível somem.
+  const entries = visibleOrderedNav(navOrder, roles, viewable);
+  // Administração continua recolhível (defaultOpen) e sempre por último; só a
+  // ordem interna dela é configurável.
+  const visibleAdmin = visibleAdminGroup(roles, viewable);
+  const adminGroup = visibleAdmin
+    ? orderGroupChildren(visibleAdmin, navOrder)
+    : undefined;
 
   return (
     <div className={cn("flex h-full flex-col bg-surface", className)}>
@@ -164,35 +143,25 @@ export function Sidebar({
           </button>
         ) : null}
 
-        {primaryItems.map((item) => (
-          <NavItem
-            key={item.href}
-            item={item}
-            active={item.href === activeHref}
-            onNavigate={onNavigate}
-            collapsed={collapsed}
-          />
-        ))}
-
-        {primaryGroups.map((group) => (
-          <NavGroup
-            key={group.label}
-            group={group}
-            activeHref={activeHref}
-            onNavigate={onNavigate}
-            collapsed={collapsed}
-          />
-        ))}
-
-        {financeGroups.map((group) => (
-          <NavGroup
-            key={group.label}
-            group={group}
-            activeHref={activeHref}
-            onNavigate={onNavigate}
-            collapsed={collapsed}
-          />
-        ))}
+        {entries.map((entry) =>
+          entry.kind === "item" ? (
+            <NavItem
+              key={entry.key}
+              item={entry.item}
+              active={entry.item.href === activeHref}
+              onNavigate={onNavigate}
+              collapsed={collapsed}
+            />
+          ) : (
+            <NavGroup
+              key={entry.key}
+              group={entry.group}
+              activeHref={activeHref}
+              onNavigate={onNavigate}
+              collapsed={collapsed}
+            />
+          ),
+        )}
 
         {adminGroup ? (
           <div className="pt-4">

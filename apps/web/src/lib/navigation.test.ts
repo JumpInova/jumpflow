@@ -3,11 +3,16 @@ import {
   adminGroupedNavigation,
   adminNavigation,
   applyNavOrder,
+  buildOrderedNav,
   canSeeNavItem,
   canSeeNavItemByMatrix,
+  financeGroupedNavigation,
   findActiveNav,
+  isFinanceGroupedHref,
   isPrimaryGroupedHref,
+  navOrderKeys,
   navPermissionCodes,
+  orderGroupChildren,
   primaryGroupedNavigation,
   primaryNavigation,
   resolveFinanceTabHref,
@@ -303,5 +308,70 @@ describe("applyNavOrder (P28 — ordem persistida do menu)", () => {
       new Set(primaryNavigation.map((i) => i.href)),
     );
     expect(first).toBe(primaryNavigation[0]);
+  });
+});
+
+describe("buildOrderedNav (Ordem do Menu com grupos)", () => {
+  const keysOf = (financeGrouped: boolean, order: Record<string, number> = {}) =>
+    buildOrderedNav(order, { financeGrouped }).map((e) => e.key);
+
+  it("reproduces the previous sidebar without a saved order", () => {
+    const keys = keysOf(true);
+    const flat = primaryNavigation
+      .filter((i) => !isPrimaryGroupedHref(i.href))
+      .filter((i) => !isFinanceGroupedHref(i.href))
+      .map((i) => i.href);
+    expect(keys).toEqual([
+      ...flat,
+      ...primaryGroupedNavigation.map((g) => g.key),
+      ...financeGroupedNavigation.map((g) => g.key),
+    ]);
+  });
+
+  it("places a group among loose items by its saved position", () => {
+    const [group] = primaryGroupedNavigation;
+    const keys = keysOf(true, { [group.key]: 0, "/app": 1 });
+    expect(keys.slice(0, 2)).toEqual([group.key, "/app"]);
+  });
+
+  it("orders children inside a group only when the group key was saved", () => {
+    const group = primaryGroupedNavigation[0];
+    const [a, b] = group.children.map((c) => c.href);
+    // Legacy flat order (no group key): children keep the catalog order.
+    expect(
+      orderGroupChildren(group, { [b]: 0, [a]: 1 }).children.map((c) => c.href),
+    ).toEqual(group.children.map((c) => c.href));
+    // With the group key saved, the in-group order applies.
+    const reordered = orderGroupChildren(group, {
+      [group.key]: 0,
+      [b]: 1,
+      [a]: 2,
+    }).children.map((c) => c.href);
+    expect(reordered.slice(0, 2)).toEqual([b, a]);
+  });
+
+  it("flattens finance groups at their position for non-finance profiles", () => {
+    const finance = financeGroupedNavigation[0];
+    const order = { [finance.key]: 0, "/app": 1 };
+    const entries = buildOrderedNav(order, { financeGrouped: false });
+    expect(entries.some((e) => e.kind === "group" && e.key === finance.key)).toBe(false);
+    const flatFinance = finance.children
+      .map((c) => c.href)
+      .filter((href) => primaryNavigation.some((i) => i.href === href));
+    expect(entries.slice(0, flatFinance.length).map((e) => e.key)).toEqual(flatFinance);
+  });
+
+  it("keeps finance items flat in catalog position with a legacy order", () => {
+    const entries = buildOrderedNav({}, { financeGrouped: false });
+    expect(entries.some((e) => e.kind === "group" && financeGroupedNavigation.some((g) => g.key === e.key))).toBe(false);
+  });
+
+  it("accepts group keys and every group child as valid order keys", () => {
+    const keys = navOrderKeys();
+    for (const g of [...primaryGroupedNavigation, ...financeGroupedNavigation, adminGroupedNavigation]) {
+      expect(keys.has(g.key)).toBe(true);
+      for (const c of g.children) expect(keys.has(c.href)).toBe(true);
+    }
+    expect(keys.has("/nao-existe")).toBe(false);
   });
 });

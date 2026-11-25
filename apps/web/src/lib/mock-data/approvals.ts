@@ -48,6 +48,11 @@ export interface ApprovalHoursEntry {
   hours: number;
   /** Display label of the activity. */
   activityLabel: string;
+  /**
+   * Descrição livre da atividade escrita pelo consultor (lida no hover do
+   * lançamento na aprovação). Truncada no servidor para manter a fila leve.
+   */
+  description?: string;
   billable: boolean;
   /** Justification kept when a manager marked the day NON-billable. */
   nonBillableReason?: string;

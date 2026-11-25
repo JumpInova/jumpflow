@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApprovalQueue } from "./ApprovalQueue";
 import { decideHours, setEntryBillable } from "@/app/app/horas/actions";
 import type { ApprovalItem } from "@/lib/mock-data/approvals";
@@ -454,5 +454,88 @@ describe("ApprovalQueue", () => {
     );
     expect(screen.getByText(/O motivo é obrigatório/)).toBeInTheDocument();
     expect(setEntryBillable).not.toHaveBeenCalled();
+  });
+
+  it("decides a weekly submission partially (some days approved, others rejected)", async () => {
+    vi.mocked(decideHours).mockResolvedValue({
+      ok: true,
+      data: { decided: 1, alreadyDecided: 0 },
+    } as never);
+    const item = makeItem({
+      source: "db",
+      entryIds: ["e1", "e2"],
+      entries: [
+        { id: "e1", date: "2026-06-08", hours: 8, activityLabel: "Dev", billable: true, description: "Implementou o fluxo X" },
+        { id: "e2", date: "2026-06-09", hours: 8, activityLabel: "Dev", billable: true },
+      ],
+      hours: 16,
+    });
+    renderQueue({ items: [item], presentation: "quiet" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Por dia/ }));
+    const dayGroup = screen.getByRole("radiogroup", { name: /09\/06/ });
+    fireEvent.click(within(dayGroup).getByRole("radio", { name: /Reprovar/ }));
+
+    // Rejecting a day requires a justification.
+    fireEvent.click(screen.getByRole("button", { name: /Aplicar decisão/ }));
+    expect(screen.getByText(/Informe uma justificativa para os lançamentos reprovados/)).toBeInTheDocument();
+    expect(decideHours).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/Justificativa da reprovação/), {
+      target: { value: "Dia sem atividade no projeto" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Aplicar decisão/ }));
+
+    await waitFor(() => expect(decideHours).toHaveBeenCalledTimes(2));
+    expect(decideHours).toHaveBeenCalledWith({ entryIds: ["e1"], decision: "APPROVED", comment: "" });
+    expect(decideHours).toHaveBeenCalledWith({
+      entryIds: ["e2"],
+      decision: "REJECTED",
+      comment: "Dia sem atividade no projeto",
+    });
+  });
+
+  it("shows the activity description when hovering a day", () => {
+    const item = makeItem({
+      source: "db",
+      entryIds: ["e1"],
+      entries: [
+        { id: "e1", date: "2026-06-08", hours: 8, activityLabel: "Dev", billable: true, description: "Implementou o fluxo X" },
+      ],
+    });
+    renderQueue({ items: [item], presentation: "quiet" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getAllByText(/08\/06/)[0].closest("[tabindex]")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Implementou o fluxo X");
+  });
+
+  it("does not reject the remaining entries when the approve batch fails", async () => {
+    vi.mocked(decideHours).mockResolvedValue({
+      ok: false,
+      error: "ATTACHMENT_REQUIRED",
+      message: "Licença exige anexo.",
+    } as never);
+    const item = makeItem({
+      source: "db",
+      entryIds: ["e1", "e2"],
+      entries: [
+        { id: "e1", date: "2026-06-08", hours: 8, activityLabel: "Dev", billable: true },
+        { id: "e2", date: "2026-06-09", hours: 8, activityLabel: "Dev", billable: true },
+      ],
+      hours: 16,
+    });
+    renderQueue({ items: [item], presentation: "quiet" });
+    fireEvent.click(screen.getByRole("button", { name: /Por dia/ }));
+    const dayGroup = screen.getByRole("radiogroup", { name: /09\/06/ });
+    fireEvent.click(within(dayGroup).getByRole("radio", { name: /Reprovar/ }));
+    fireEvent.change(screen.getByLabelText(/Justificativa da reprovação/), {
+      target: { value: "Motivo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Aplicar decisão/ }));
+    await waitFor(() => expect(decideHours).toHaveBeenCalledTimes(1));
+    expect(decideHours).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "APPROVED" }),
+    );
+    await screen.findByText(/Nenhum lançamento decidido/);
   });
 });
