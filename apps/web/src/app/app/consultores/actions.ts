@@ -23,7 +23,10 @@ import {
   CONSULTANT_CURRICULUM_CODE,
   CONSULTANT_DOCUMENTS_CODE,
   CONSULTANT_PERSONAL_CODE,
+  CONSULTANT_PROJECT_HISTORY_CODE,
 } from "@/lib/auth/permission-codes";
+import { PROJECT_HISTORY_ROLES } from "@/lib/auth/roles";
+import type { ProjectHistoryEntry } from "@/lib/consultants/project-history";
 import type { RoleName } from "@/lib/auth/types";
 import {
   canAccessSensitiveCost,
@@ -1461,6 +1464,30 @@ export async function loadConsultantExperiences(
     await requireRoleOrPermission(PEOPLE_ROLES, CONSULTANT_CURRICULUM_CODE, "view");
     const rows = await listConsultantExperiences(consultantId);
     return { ok: true, data: rows };
+  } catch (error) {
+    return toFailure(error);
+  }
+}
+
+/**
+ * Histórico de projetos do consultor (derivado das alocações; somente leitura).
+ * Gate: PROJECT_HISTORY_ROLES OU `CONSULTORES_PROJETOS` view na Matriz. Não traz
+ * nenhum valor financeiro.
+ */
+export async function loadConsultantProjectHistory(
+  consultantId: string,
+): Promise<ActionResult<ProjectHistoryEntry[]>> {
+  try {
+    ensureDatabase();
+    await requireRoleOrPermission(
+      PROJECT_HISTORY_ROLES,
+      CONSULTANT_PROJECT_HISTORY_CODE,
+      "view",
+    );
+    const { getConsultantProjectHistory } = await import(
+      "@/lib/db/consultant-project-history"
+    );
+    return { ok: true, data: await getConsultantProjectHistory(consultantId) };
   } catch (error) {
     return toFailure(error);
   }

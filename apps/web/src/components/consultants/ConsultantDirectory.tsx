@@ -7,6 +7,7 @@ import {
   Building2,
   CreditCard,
   Edit,
+  FolderKanban,
   FileText,
   Gift,
   GraduationCap,
@@ -40,6 +41,7 @@ import {
   deleteConsultantProjectRate,
   loadConsultantAdHocPayments,
   loadConsultantProfile,
+  loadConsultantProjectHistory,
   loadConsultantProjectRates,
   loadConsultantSensitiveCompensation,
   saveBankAccount,
@@ -71,6 +73,9 @@ import type {
   ConsultantProfile,
 } from "@/lib/db/consultants";
 import { computeCompensation } from "@/lib/consultants/compensation";
+import type { ProjectHistoryEntry } from "@/lib/consultants/project-history";
+import { ConsultantProjectHistorySection } from "./ConsultantProjectHistorySection";
+import { ConsultantReportExport } from "./ConsultantReportExport";
 import { ConsultantAvailabilityBadge } from "./ConsultantAvailabilityBadge";
 import { ConsultantCompetenciasSection } from "./ConsultantCompetenciasSection";
 import { ConsultantCurriculumSection } from "./ConsultantCurriculumSection";
@@ -111,10 +116,16 @@ export interface ConsultantGroupPerms {
    * grupo Dados Sensíveis. Ausente = sem acesso.
    */
   sensitiveCost?: ConsultantGroupPermission;
+  /**
+   * Histórico de projetos (somente leitura, derivado das alocações). Ausente =
+   * segue `canManagePeople` (demo/tests).
+   */
+  projectHistory?: ConsultantGroupPermission;
 }
 
 type ResolvedGroupPerms = ConsultantGroupPerms & {
   sensitiveCost: ConsultantGroupPermission;
+  projectHistory: ConsultantGroupPermission;
 };
 
 export interface ConsultantDirectoryProps {
@@ -132,6 +143,8 @@ export interface ConsultantDirectoryProps {
    * `/app/consultores/novo?...`). Abre o perfil para completar os dados.
    */
   initialConsultantId?: string;
+  /** Mostra "Exportar relatório" (ADMIN / Gestor de Área / People ou Matriz). */
+  canExportReport?: boolean;
 }
 
 /**
@@ -147,6 +160,7 @@ export function ConsultantDirectory({
   canManageFinancials = false,
   groupPerms,
   initialConsultantId,
+  canExportReport = false,
 }: ConsultantDirectoryProps) {
   const router = useRouter();
   // Resolve per-group perms. Without an explicit map (demo/tests), fall back to
@@ -162,6 +176,10 @@ export function ConsultantDirectory({
   const perms: ResolvedGroupPerms = {
     ...resolvedPerms,
     sensitiveCost: resolvedPerms.sensitiveCost ?? { view: false, edit: false },
+    projectHistory: resolvedPerms.projectHistory ?? {
+      view: canManagePeople,
+      edit: false,
+    },
   };
   // The profile blob (personal/documents/curriculum/bank) backs four groups; load
   // it if ANY of them is viewable (not just the legacy People flag).
@@ -179,6 +197,9 @@ export function ConsultantDirectory({
   const [adHoc, setAdHoc] = useState<AdHocPaymentsView | null>(null);
   const [projectRates, setProjectRates] =
     useState<ConsultantProjectRatesView | null>(null);
+  const [projectHistory, setProjectHistory] = useState<
+    ProjectHistoryEntry[] | { error: string } | null
+  >(null);
   // Remuneracao vigente COM valores (grupo Dados Sensiveis), carregada a parte
   // do perfil: o grupo nao depende do acesso aos dados pessoais.
   const [sensitiveCompensation, setSensitiveCompensation] =
@@ -203,13 +224,15 @@ export function ConsultantDirectory({
     setProfile(null);
     setAdHoc(null);
     setProjectRates(null);
+    setProjectHistory(null);
     setSensitiveCompensation(null);
     notify(null);
     // Remuneracoes pontuais sao dado financeiro: carregadas sob demanda para
     // quem pode ver o grupo de valores. Valor acordado e valor/hora por projeto
     // (custo do consultor) so para o grupo Dados Sensiveis. Leitura tambem
     // gated server-side nas actions.
-    const [adHocResult, ratesResult, compensationResult] = await Promise.all([
+    const [adHocResult, ratesResult, compensationResult, historyResult] =
+      await Promise.all([
       perms.compensation.view
         ? loadConsultantAdHocPayments(consultant.id)
         : null,
@@ -219,7 +242,19 @@ export function ConsultantDirectory({
       perms.sensitiveCost.view
         ? loadConsultantSensitiveCompensation(consultant.id)
         : null,
+      perms.projectHistory.view
+        ? loadConsultantProjectHistory(consultant.id)
+        : null,
     ]);
+    // Falha de leitura (inclusive demo sem banco) vira estado de erro na
+    // seção — nunca um falso "Sem projetos" nem "Carregando" infinito.
+    if (historyResult) {
+      setProjectHistory(
+        historyResult.ok
+          ? historyResult.data
+          : { error: historyResult.message },
+      );
+    }
     if (adHocResult?.ok) setAdHoc(adHocResult.data);
     if (ratesResult?.ok) setProjectRates(ratesResult.data);
     if (compensationResult?.ok) setSensitiveCompensation(compensationResult.data);
@@ -256,6 +291,7 @@ export function ConsultantDirectory({
     setProfile(null);
     setAdHoc(null);
     setProjectRates(null);
+    setProjectHistory(null);
     setSensitiveCompensation(null);
   }
 
@@ -276,6 +312,18 @@ export function ConsultantDirectory({
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialConsultantId, consultants]);
+
+  const areaOptions = useMemo(() => {
+    // Dedup sem diferenciar maiúsculas/espaços (o servidor compara igual).
+    const byKey = new Map<string, string>();
+    for (const c of consultants) {
+      const area = c.area?.trim() ?? "";
+      if (area && !byKey.has(area.toLowerCase())) {
+        byKey.set(area.toLowerCase(), area);
+      }
+    }
+    return [...byKey.values()].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [consultants]);
 
   const skillOptions = useMemo(
     () => distinctSkills(consultants),
@@ -390,15 +438,22 @@ export function ConsultantDirectory({
           </>
         }
         actions={
-          canManagePeople ? (
-            <ActionButton
-              variant="primary"
-              size="sm"
-              icon={UserPlus}
-              onClick={() => router.push("/app/consultores/novo")}
-            >
-              Novo consultor
-            </ActionButton>
+          canManagePeople || canExportReport ? (
+            <>
+              {canExportReport ? (
+                <ConsultantReportExport areas={areaOptions} />
+              ) : null}
+              {canManagePeople ? (
+                <ActionButton
+                  variant="primary"
+                  size="sm"
+                  icon={UserPlus}
+                  onClick={() => router.push("/app/consultores/novo")}
+                >
+                  Novo consultor
+                </ActionButton>
+              ) : null}
+            </>
           ) : null
         }
       />
@@ -427,6 +482,7 @@ export function ConsultantDirectory({
         loadingProfile={loadingProfile}
         adHoc={adHoc}
         projectRates={projectRates}
+        projectHistory={projectHistory}
         sensitiveCompensation={sensitiveCompensation}
         perms={perms}
         message={message}
@@ -447,6 +503,7 @@ function ConsultantDetailModal({
   loadingProfile,
   adHoc,
   projectRates,
+  projectHistory,
   sensitiveCompensation,
   perms,
   message,
@@ -462,6 +519,7 @@ function ConsultantDetailModal({
   loadingProfile: boolean;
   adHoc: AdHocPaymentsView | null;
   projectRates: ConsultantProjectRatesView | null;
+  projectHistory: ProjectHistoryEntry[] | { error: string } | null;
   sensitiveCompensation: ConsultantCompensationView | null;
   perms: ResolvedGroupPerms;
   message: string | null;
@@ -846,6 +904,16 @@ function ConsultantDetailModal({
               canManagePeople={perms.curriculum.edit}
               onMessage={onMessage}
             />
+          </CollapsibleGroup>
+        ) : null}
+
+        {perms.projectHistory.view ? (
+          <CollapsibleGroup
+            title="Histórico de projetos"
+            icon={FolderKanban}
+            hint="Somente leitura"
+          >
+            <ConsultantProjectHistorySection entries={projectHistory} />
           </CollapsibleGroup>
         ) : null}
 

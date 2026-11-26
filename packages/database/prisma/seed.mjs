@@ -1172,6 +1172,10 @@ const PERMISSION_CATALOG = [
   // financeira gerenciável pela Matriz: Financeiro + People/DP. Não expõe demais
   // campos financeiros (valor hora/custo/margem), que ficam em outros codes.
   { code: "CONSULTORES_REMUNERACAO", name: "Valores e remuneração", module: "Pessoas", parent: "CONSULTORES", sort: 60, view: FINANCIAL_PEOPLE, create: FINANCIAL_PEOPLE, edit: FINANCIAL_PEOPLE, del: FINANCIAL_PEOPLE },
+  // Histórico de projetos (derivado das alocações, somente leitura) e o
+  // relatório de consultores exportável (Gestor de Área / People / ADMIN).
+  { code: "CONSULTORES_PROJETOS", name: "Histórico de projetos", module: "Pessoas", parent: "CONSULTORES", sort: 60, view: CONSULTANT_PROFILE_VIEW },
+  { code: "CONSULTORES_RELATORIO", name: "Relatório de consultores", module: "Pessoas", parent: "CONSULTORES", sort: 60, view: ["ADMIN", "AREA_MANAGER", "PEOPLE"] },
   { code: "SKILLS", name: "Skills", module: "Pessoas", sort: 61, view: ALL_ROLES, create: ALL_ROLES, edit: ALL_ROLES },
   { code: "COMPETENCIAS", name: "Competências", module: "Pessoas", sort: 62, view: COMPETENCY_READ, create: COMPETENCY_WRITE, edit: COMPETENCY_WRITE, del: COMPETENCY_WRITE },
   { code: "DISPONIBILIDADE", name: "Disponibilidade", module: "Pessoas", sort: 63, view: AVAILABILITY_READ },
