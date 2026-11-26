@@ -88,7 +88,7 @@ export async function GET(request: Request) {
     return finish(redirectToAccount(base, result));
   }
 
-  const encrypted = encryptTokenSet(result.account.tokens, null, result.account.phase);
+  const encrypted = encryptTokenSet(result.account.tokens, null, result.account.capabilities);
   const saved = await upsertM365Connection({
     userId: dbUser.id,
     ...encrypted,
@@ -116,17 +116,29 @@ export async function GET(request: Request) {
       created: saved.created,
       phase: result.account.phase,
       scopes: encrypted.scopes.length,
-      extraScopes: countExtraScopes(result.account.tokens.scopes, result.account.phase),
+      capabilities: result.account.capabilities.join(",") || "BASE",
+      extraScopes: countExtraScopes(result.account.tokens.scopes, result.account.capabilities),
       mailScopeMissing: result.account.mailScopeMissing,
+      teamsScopeMissing: result.account.teamsScopeMissing,
     },
   });
+  // Teams pedido e não concedido (tipicamente: falta o consentimento de admin
+  // do tenant): o resto conecta e a tela explica.
+  if (result.account.teamsScopeMissing && result.account.phase === "M3") {
+    return finish(redirectToAccount(base, { ok: false, code: "teams_scope_missing" }));
+  }
   if (result.account.mailScopeMissing) {
     return finish(redirectToAccount(base, { ok: false, code: "mail_scope_missing" }));
   }
   return finish(
     redirectToAccount(base, {
       ok: true,
-      status: result.account.phase === "M2" ? "atas_ativadas" : "conectado",
+      status:
+        result.account.phase === "M3"
+          ? "transcricoes_ativadas"
+          : result.account.phase === "M2"
+            ? "atas_ativadas"
+            : "conectado",
     }),
   );
 }

@@ -16,7 +16,7 @@ Também não contam como regressão.
 |---|---|---|
 | M1 | concluída (commit no branch) | APROVADO (após 2 ciclos de correção) |
 | M2 | concluída (commit no branch) | APROVADO COM RESSALVAS (após REPROVADO por ReDoS e 2 ciclos de correção) |
-| M3 | pendente | — |
+| M3 | concluída (commit no branch) | APROVADO COM RESSALVAS (após REPROVADO por estado sem saída e 2 ciclos) |
 
 ## Fase M1 — dev
 
@@ -745,3 +745,400 @@ Data: 2026-11-26. Corrige a reprovação do validador: CPU síncrona quadrática
 Revalidação após "correções 2": **APROVADO COM RESSALVAS** — 107 casos hostis medidos pelo validador, todos < 30 ms; auditoria independente de regex sem quadrática remanescente.
 Menor remanescente, a tratar no início da M3:
 1. `truncateAtSpace` (text-safe.ts:49) corta no meio de um dado pessoal quando não há espaço nos 200 caracteres anteriores ao teto (roda antes da máscara) → fragmento de CPF/telefone pode ir cru à IA. Recuar enquanto o caractere for de "dado" ou descartar o último bloco sem espaço.
+
+## Fase M3 — dev
+
+Data: 2026-11-26 · Branch `feat/m365` (sobre `5d1c087`) · sem commit (orquestrador commita).
+
+### Menor remanescente da M2 (tratado primeiro)
+- `truncateAtSpace` (`minutes/text-safe.ts`) não corta mais dado pessoal antes da máscara:
+  1. recua até um espaço **sem limite de distância** (linear): o bloco sem espaço que cruza o teto
+     é descartado inteiro; sem espaço antes do teto → `""`;
+  2. descarta a cauda de dígitos/separadores (`0-9 . - ( ) + /` e espaços) que sobrar, então um
+     telefone/CPF com espaço interno ("123 456 789 09", "(11) 98765-4321") nunca vira fragmento.
+- Teste `minutes/truncate.test.ts`: corte em TODAS as posições de um texto com e-mail/telefone/
+  CPF/CNPJ → nada de dígito ou `@` sem máscara; 2 M caracteres < 1 s. Os tetos novos do VTT usam a
+  mesma função.
+
+### Arquivos
+- **Schema/migrations (aditivas):** `schema.prisma` — `NotificationEvent.CHECKPOINT_TRANSCRIPT_MISSING`;
+  enums `CheckpointTranscriptStatus` e `CheckpointTranscriptMode`; `CheckpointTeamsTranscript` (1:1 com
+  Checkpoint: status, mode, attempts, nextAttemptAt, lastError, leaseOwner/leaseUntil, contadores; índice
+  `(status, nextAttemptAt)`). `migrations/20261126150000_m365_transcricao_enum` (só o enum, transação
+  própria) e `20261126150100_m365_transcricao_teams` (gerada por `migrate diff` a partir de uma cópia do
+  schema anterior).
+- **Consentimento:** `scopes.ts` (capacidades `MAIL`/`TEAMS`, `scopesForCapabilities`,
+  `consentedCapabilities`, `requestedCapabilities`, `refreshFallbacks`, `M3_SCOPES`), `tokens.ts`,
+  `oauth.ts`, `connect-flow.ts` (caps no cookie cifrado; `teamsScopeMissing`;
+  `teams_consent_denied`), `connect/route.ts` (`?fase=M3`, soma com o já consentido via
+  `getM365GrantedScopes`), `callback/route.ts`, `messages.ts`, `route-helpers.ts`, `lib/db/m365.ts`.
+- **Graph:** `graph/client.ts` (`findOnlineMeetingByJoinUrl`, `listTranscripts`, `getTranscriptContent`,
+  `onlineMeetingFilterUrl`, `readTextCapped`; `getJson` refatorado em `getOk`), `graph/types.ts`,
+  `graph/fake.ts` (reuniões/transcrições em memória + `calls.teams`).
+- **Lib M3 (`lib/m365/transcripts/`):** `vtt.ts` (parser linear), `schedule.ts` (máquina de estados,
+  backoff, elegibilidade, modo, precedência — puro), `store.ts` (porta), `run.ts` (orquestração job e
+  manual). `lib/m365/manager-connection.ts` (lease + "só a conta do gestor", extraído da M2 e reusado);
+  `testing/memory-transcript-store.ts`; `lib/db/m365-transcripts.ts` (Prisma).
+- **M2 tocada:** `minutes/run.ts` (usa `manager-connection`; `waitsForTeams` + `summary.deferred`),
+  `minutes/store.ts` e `lib/db/m365-minutes.ts` (joinUrl/organizador/teamsStatus; painel com `teams`),
+  `minutes/generate.ts` (prompt/notas por origem `email|teams`; linha anti-injeção no prompt).
+- **Job/runtime/actions/UI:** `GET|POST /api/jobs/m365-teams-transcripts` (CRON_SECRET),
+  `runtime.ts` (`runTeamsTranscriptsJob`, `fetchCheckpointTranscriptNow`, extração mascarada
+  compartilhada), `checkpoints/m365-actions.ts` (`fetchCheckpointTeamsTranscript`),
+  `CheckpointM365Panel.tsx` (seção "Transcrição do Teams" com "Buscar transcrição do Teams" ou
+  "Complementar com a transcrição do Teams"), `lib/checkpoint/action-items.ts` (tipos/rótulos),
+  `M365ConnectionPanel.tsx` + `conta/microsoft-365/page.tsx` (seção "Transcrições do Teams", botão
+  "Ativar transcrições do Teams", aviso de consentimento de admin), `template-registry.ts` (evento novo,
+  só sino).
+- **Testes novos:** `transcripts/{vtt,schedule,run}.test.ts`, `graph/client-teams.test.ts`,
+  `m3-consent.test.ts`, `minutes/truncate.test.ts`, `integrations/m365/routes.m3.test.ts`,
+  `checkpoints/m365-actions.m3.test.ts`, `jobs/m365-teams-transcripts/route.test.ts`,
+  `db/m365-transcripts.test.ts`; casos M3 em `CheckpointM365Panel.test.tsx`.
+  Ajustados: `routes(.m2).test.ts` (mock de `getM365GrantedScopes`; `?fase=M9` como fase desconhecida),
+  `m2-consent.qa.test.ts` (o "resíduo de M3" agora é capacidade consentida; caso novo com só um escopo
+  do Teams).
+- `.env.example`: nenhuma env nova; documentadas as permissões do Teams (admin consent) e o agendamento.
+- `ESPECIFICACAO.md` §3/M3: decisões registradas.
+
+### Decisões
+- **Conjunto de capacidades, não fases lineares.** Base (agenda) + `MAIL`? + `TEAMS`?, independentes:
+  M1, M1+e-mail, M1+Teams e M1+e-mail+Teams. `TEAMS` só conta com os DOIS escopos gravados. O connect
+  soma a capacidade pedida às já consentidas (lidas do banco; desconectado = nada), então "Reconectar"
+  não perde e-mail/Teams. `buildAuthorizeUrl` valida contra o conjunto EXATO (Mail.Read fora do conjunto
+  é recusado) e continua recusando proibidos escondidos em string. O refresh pede exatamente o conjunto;
+  em `consent_required`/`invalid_scope` recua na ordem conjunto → sem Teams → sem e-mail → base, cada
+  um no máximo uma vez (≤ 4 chamadas); `invalid_grant` puro → REAUTH sem recuo.
+- **Consentimento de admin:** o botão explica que `OnlineMeetingTranscript.Read.All` exige aprovação do
+  admin do tenant. Erro da Microsoft no fluxo M3 → `teams_consent_denied`; token sem os escopos do Teams
+  → `teams_scope_missing` (o resto conecta e é gravado normalmente).
+- **Só a conta do gestor organizador:** a conexão usada é a do `managerUserId` (papel de quem registra,
+  ACTIVE, com Teams, não é o próprio consultor); o organizador do evento tem que ser a caixa dele; se o
+  Graph informa o organizador da reunião online e ele difere de `graphUserId`, FAILED `not_organizer`
+  sem baixar conteúdo. Manual só para o gestor do checkpoint (nem ADMIN/PEOPLE).
+- **Filtro JoinWebUrl:** link usado como veio da agenda, aspas OData dobradas, `$filter` codificado uma
+  vez com `encodeURIComponent` (`%3a`→`%253a`, espaço `%20`, nunca `+`). Link com espaço/controle, não-https
+  ou > 2048 → nem chama o Graph.
+- **VTT:** `getTranscriptContent` lê em stream com teto (5 MB no total por reunião, até 5 transcrições em
+  ordem de criação); acima → FAILED `transcript_too_large`. Parser sem regex (indexOf/laços, buscas que não
+  se sobrepõem), tetos ANTES de processar (6 M caracteres, 4 000 por linha, 80 por nome, 50 000 falas,
+  300 000 de saída 70/30 por linha inteira), cortes por `truncateAtSpace`. Nome do falante sem tags,
+  invisíveis/bidi e `:`. VTT bruto só em memória; nunca persistido nem logado.
+- **Ordem do texto:** VTT → "Nome: fala" → **mascarar** → `limitText` 70/30 (60 k) → IA
+  (`getAiTextProvider()` injetado, `json: true`) → Zod (mesmo `parseMinutes`) → desmascarar em memória.
+  Gravado: `notes` = ata desmascarada, `transcription` = fonte mascarada (como na M2); cards de Ação PENDING;
+  extração F4 com texto mascarado + mapa. IA indisponível → fonte mascarada + nota de origem, sem cards.
+- **Máquina de estados** (`schedule.ts`, persistida em `CheckpointTeamsTranscript`): PENDING (enrolado pelo
+  job para DRAFT sem conteúdo, Teams, não cancelado, < 48 h, gestor com Teams; 1ª consulta em fim+10 min) →
+  WAITING_TRANSCRIPT (backoff 15/30/60/120 min, a última consulta cai exatamente em fim+6 h) → GENERATING
+  (VTT em memória, com lease) → DONE | NO_TRANSCRIPT (6 h sem transcrição; aviso in-app ao gestor "cole as
+  notas ou aguarde a ata por e-mail", uma vez) | FAILED (403 cuja próxima tentativa passaria de 48 h,
+  grande demais, não organizador, checkpoint mudou, já tinha ata). 403 = WAITING com `access_denied` e
+  próxima tentativa em +24 h (nem o botão manual consulta antes). Erro transitório: backoff até 48 h.
+- **Concorrência/idempotência:** claim ATÔMICO do registro (`updateMany` condicional: estado devido +
+  lease livre/vencido) + lease da conexão do gestor (o mesmo da agenda/M2). Toda gravação exige o dono do
+  claim; `saveTranscriptMinutes` é uma transação (registro DONE só se dono+GENERATING, checkpoint por update
+  condicional, cards, auditoria só com contagens). GENERATING com lease vencido é retomado. Nenhuma trava
+  em memória.
+- **Precedência sobre o e-mail:** se o rascunho ainda não tem conteúdo, a transcrição gera a ata (GENERATE).
+  O job da M2 **espera** (`summary.deferred`) enquanto a transcrição está em GENERATING/DONE ou, para reunião
+  Teams organizada pelo gestor com Teams ativo, até 1 h após o fim sem resultado final. Depois disso o
+  e-mail segue. Com ata/notas existentes, o job da M3 não lê nada (registro FAILED `superseded`) e a
+  transcrição só entra por ação do gestor como **complemento** (SUPPLEMENT): notas existentes + separador +
+  ata da transcrição; fonte existente + fonte mascarada; status não é rebaixado; nada é sobrescrito
+  (update condicional pelos valores lidos). A busca manual por e-mail não espera o Teams (ação explícita).
+- **Job próprio** `/api/jobs/m365-teams-transcripts` (cadência sugerida 5–10 min; o backoff fica no banco),
+  separado do de atas por e-mail para não acoplar cadências; a precedência é garantida pelos dados.
+- **Logs:** IntegrationEvent `transcript.attempt`/`transcript.ingest`/`transcript.teams` só com códigos e
+  contadores (falas, falantes, transcrições, truncado, modo). AuditEvent `CHECKPOINT_MINUTES_FROM_TEAMS` /
+  `CHECKPOINT_MINUTES_SUPPLEMENTED_FROM_TEAMS` só com contagens.
+- **Dependências:** nenhuma nova.
+
+### Critérios atendidos (M3)
+- Consentimento incremental de `OnlineMeetings.Read` + `OnlineMeetingTranscript.Read.All` (botão próprio, só
+  gestor, aviso de admin consent); refresh por capacidades com recuo — `m3-consent.test.ts`, `routes.m3.test.ts`.
+- Reunião Teams organizada pelo gestor, 10 min–48 h; filtro `JoinWebUrl` com encoding testado → transcripts →
+  content VTT com teto — `client-teams.test.ts`, `transcripts/run.test.ts`.
+- Backoff 15→30→60→120 até 6 h; 403 = 24 h; sem transcrição → aviso — `schedule.test.ts`, `run.test.ts`.
+- Precedência (gera sem ata; espera do e-mail; complemento só manual, sem sobrescrever) — `run.test.ts`.
+- VTT só em memória, parser linear (casos hostis < 1 s; pipeline com VTT hostil de 3,5 MB < 2 s), máscara
+  antes da IA, corte nunca parte dado — `vtt.test.ts`, `truncate.test.ts`, `run.test.ts`.
+- Máquina de estados persistida, claims no banco, idempotência e corrida entre instâncias — `run.test.ts`,
+  `db/m365-transcripts.test.ts`.
+- Conta do consultor nunca usada (consultor também conectado com Teams: zero chamadas) — `run.test.ts`.
+- Flag off: rotas 404, job `skipped`, action FORBIDDEN sem guard, seções não carregam — `route.test.ts`,
+  `m365-actions.m3.test.ts`.
+- Validação: 114 testes novos/ajustados da fase; 93 arquivos de M365/Checkpoint/rotas/templates com 1242
+  testes passando; suíte completa 3918 passando e as 15 falhas em 8 arquivos são o baseline
+  (`next-auth`/`next/server`); `tsc` só com os 10 erros de `inbound.test.ts`; eslint limpo; `prisma validate`
+  e `db:generate` ok (com `DATABASE_URL`/`DIRECT_URL` fictícias só para o validate; nada rodou contra banco).
+
+### Pendências de validação real (Azure)
+- Cadastrar no app do Entra as permissões delegadas `OnlineMeetings.Read` e `OnlineMeetingTranscript.Read.All`
+  e conceder o **admin consent**; conferir a mensagem/código real que o usuário recebe sem ele (`access_denied`?
+  `consent_required`?, `error_subcode`) e se o fluxo de "admin consent workflow" volta ao callback.
+- Encoding real do `$filter=JoinWebUrl eq '…'`: confirmar com um link real (formatos `meetup-join/19%3ameeting…`
+  e o novo `teams.microsoft.com/meet/<id>?p=…`). Atenção: a M1 guarda o `joinUrl` normalizado por
+  `new URL().toString()` — confirmar que fica byte a byte igual ao `joinWebUrl` do Graph.
+- `/me/onlineMeetings` com delegado: confirmar que só devolve reuniões do organizador e se
+  `participants.organizer.identity.user.id` vem preenchido; reuniões de canal/recorrentes (o link é da série?).
+- `/transcripts` e `/content?$format=text/vtt`: tempo real até a transcrição aparecer, formato real (`<v Nome>`,
+  ids de cue), `content-length`, transcrições múltiplas (parar/retomar), e se o Accept `text/vtt` é aceito.
+- Código/forma reais do 403 (política de transcrição desligada, reunião de outro tenant) e do 404.
+- Erro real do refresh após o admin revogar o consentimento do Teams (esperado `invalid_grant` +
+  `suberror: consent_required`/AADSTS65001 → recuo sem Teams).
+- `scope` devolvido no token com os escopos do Teams (prefixo/caixa) para `hasTeamsScopes`.
+
+### Riscos
+- A espera do e-mail (1 h) atrasa a ata por e-mail de reuniões Teams sem transcrição; depois da janela, se o
+  e-mail chegar primeiro, a transcrição só complementa (decisão de produto: pode ser revista).
+- `joinUrl` normalizado pela M1 pode não casar com o filtro exato do Graph (pendência acima); o efeito é
+  `meeting_not_found` → NO_TRANSCRIPT + aviso, nunca dado errado.
+- Teto de 5 MB/5 transcrições: reuniões muito longas viram FAILED `transcript_too_large` (o gestor cola notas).
+- Nomes de falantes vão à IA sem máscara (a spec só exige e-mail/telefone/CPF/CNPJ) e ficam na transcrição
+  mascarada do checkpoint (PRIVATE, só o gestor).
+- Complemento duplica cards de Ação se o gestor complementar após já ter cards da M2 (cards distintos, PENDING;
+  o gestor descarta).
+- Prompt injection por fala: o prompt avisa para ignorar instruções do texto, e a saída passa por Zod e vira
+  sugestão; não há outra mitigação.
+
+## Fase M3 — testes
+
+Data: 2026-11-26 · Branch `feat/m365` (sobre `5d1c087`, M3 não commitada) · sem commit. Nenhum código de produção
+alterado; sem banco, sem Graph real, sem IA real (Graph fake/fetch mockado, provider mockado, stores em memória).
+
+### Testes criados (89 casos, 5 arquivos)
+- `lib/m365/transcripts/run.qa.test.ts` (30) — joinUrl real típico (`%3a`, `%40`, `?context=%7b…%7d`, `/meet/<id>?p=`,
+  `&anon=true#x`): M1 grava byte a byte e o `$filter` decodificado é o link ORIGINAL; o job consulta com o valor gravado;
+  conexão do consultor devolvida pelo store para o gestor → recusada, zero chamadas; consultor com Teams nunca usado (job e
+  botão); gestor sem papel / com só um escopo do Teams → nada lido; `not_organizer` só com a busca da reunião (sem
+  transcripts/content/IA/aviso); backoff 15/30/60/120/120/5 até 6 h exatas; 403 antes/depois de 24 h do fim; transitório
+  até 48 h; 429 não consome tentativa; IA que lança → WAITING sem gravar e sem PII no `lastError`; bloqueio de 24 h do botão
+  (WAITING); GENERATING com lease vivo não é retomado, vencido é, e o dono antigo não grava mais; idempotência do botão e do
+  job; teto TOTAL de bytes entre transcrições; ordem de criação e no máximo 5; VTT/horários/tags/PII crus em nada
+  persistido/logado/console; máscara no complemento (notas existentes com PII); espera do e-mail (1 h exata, sem Teams,
+  sem organizador, GENERATING/DONE); job nunca complementa sozinho (`superseded`); complemento preserva notas/fonte e não
+  rebaixa EXTRACTED; ARQUIVADO recusado.
+- `lib/m365/m3-consent.qa.test.ts` (20) — só e-mail retirado → mantém Teams+agenda; Teams retirado (AADSTS65001 na
+  descrição) → base; `invalid_grant` real no meio da cascata para ali (REAUTH, 2 chamadas); `invalid_grant`+`bad_token` sem
+  recuo; tudo recusado → ≤ 4 chamadas; só um escopo do Teams gravado → refresh pede só a base; token com Mail.Read/Chat/
+  ReadWrite extras → não gravados; prefixo/caixa gravados canônicos; 9 proibidos (`User.Read.All`, `ChannelMessage.Read.All`,
+  `Mail.Send.Shared`, `api://…/.default`…) recusados em qualquer conjunto; escopo do Teams fora do conjunto recusado;
+  separadores escondidos.
+- `lib/m365/graph/client-teams.qa.test.ts` (12) — encoding (`%3a`→`%253a`, `&`/`+`/`#`/`;` dentro do literal, só 2
+  parâmetros), injeção OData por aspa, DEL/NUL/tab/sem esquema → não chama; 429 com Retry-After repete a mesma URL;
+  429 persistente → `throttled` após o teto; 401 → refresh uma vez; 404 → `not_found`; teto em BYTES UTF-8, multibyte
+  partido entre chunks, stream sem content-length e content-length mentiroso → `content_too_large`.
+- `lib/m365/transcripts/vtt.qa.test.ts` (18) — `truncateAtSpace` em TODAS as posições de 4 textos (tab, NBSP, CR/LF,
+  `+55`, telefone sem separador, CPF colado, e-mail entre `<>`) → nada sem máscara; pior caso de cauda numérica 4 M
+  linear; 7 VTT hostis < 1 s (6 M de `<v`, 300 k cues, `-->` em toda linha, entidades gigantes, tags aninhadas, só CR,
+  60 k falantes alternados); teto de 50 000 falas; nome do falante sem `:`/bidi/quebra; linha gigante; 70/30 por linha.
+- `app/api/jobs/m365-teams-transcripts/route.qa.test.ts` (9) — produção sem segredo, segredo na query/esquema errado →
+  401; flag `false/0/off/no/" "` inerte; sem banco/credenciais → skipped; resposta só com contadores.
+
+### Resultado
+- Vitest (suíte inteira): **4000 passed | 15 failed | 7 expected fail | 1 skipped** (4023; 335 arquivos, 8 falhando).
+  As 15 falhas/8 arquivos são o baseline `next-auth`→`next/server`; nenhuma nova. Os 7 `it.fails` são os achados abaixo.
+- `tsc -p tsconfig.test.json --noEmit`: só os 10 erros pré-existentes de `inbound.test.ts`.
+- `eslint` nos 5 arquivos novos: limpo.
+
+### Bugs encontrados
+**Bloqueante** — nenhum.
+
+**Importante**
+1. **403 após 24 h do fim fura o bloqueio de 24 h pelo botão** — `schedule.ts:124` grava FAILED `access_denied` com
+   `nextAttemptAt = null` quando +24 h passaria de 48 h; o bloqueio do manual (`run.ts:463`) só olha `nextAttemptAt > now`
+   e o claim `force` reabre FAILED. Cenário: 403 em fim+25 h, botão em fim+26 h → consulta reunião/transcripts/content de
+   novo. Esperado: nenhuma consulta por 24 h após o 403 (guardar `lastCheckedAt`/data do 403 e checar por ela).
+   Teste: `run.qa.test.ts` (`it.fails`).
+2. **Complementar duplica cards de Ação** — `lib/db/m365-transcripts.ts:281` faz `createMany` incondicional e
+   `TranscriptCheckpoint` nem carrega os cards existentes; a mesma ação na ata por e-mail (M2) e na transcrição vira dois
+   cards PENDING. Esperado: no SUPPLEMENT, pular ações cujo título normalizado já existe no checkpoint (ou não criar cards
+   no complemento). Teste: `run.qa.test.ts` (`it.fails`).
+
+**Menor**
+3. **joinUrl normalizado pela M1 pode não casar com o `JoinWebUrl` do Graph** — `calendar/normalize.ts:84`
+   (`new URL().toString()`). Para o formato real típico (`19%3ameeting…%40thread.v2/0?context=%7b…%7d`) e o `/meet/<id>?p=`
+   o valor é idêntico e o filtro leva o link original (testado). Diverge em: `context` com JSON sem encoding (`{"Tid":…}` →
+   `%22`), host em maiúsculas e `:443` explícito. Efeito: `meeting_not_found` → NO_TRANSCRIPT (nunca dado errado). Sugestão:
+   guardar também o link cru do Graph (validado) e usar esse no filtro. Teste: 3 `it.fails`. Confirmar no Azure.
+4. **Fragmento de CPF cru quando uma tag com espaço parte o dado no corte de linha** — `vtt.ts:254` corta a linha CRUA
+   (antes de tirar tags); em `123.456.<c.x y>789-09` cruzando o teto de 4 000, sobra `123.456.` para a IA. Improvável em
+   VTT do Teams. Sugestão: tirar tags antes do corte ou reaplicar a cauda numérica depois. Teste: `vtt.qa.test.ts`
+   (`it.fails`).
+5. **Fala única acima do teto some inteira** — `vtt.ts:327-339` (`utterancesToText`) corta por linha inteira; um monólogo
+   (ou VTT sem `<v>`, cujas falas sem falante são fundidas) maior que o orçamento vira só o marcador, que passa do
+   `MIN_SOURCE_CHARS` e gera uma ata "com sucesso" sem conteúdo. Sugestão: cortar a linha com `truncateAtSpace` quando ela
+   sozinha passa do orçamento. Teste: `vtt.qa.test.ts` (`it.fails`).
+6. (qualidade de teste, sem `it.fails`) `graph/client-teams.test.ts:105` usa `new Blob(...).stream()`, que não existe no
+   jsdom: o caso "stream que passa → content_too_large" passa por `network_error` e só confere `GraphError`. O caminho de
+   stream agora é coberto em `client-teams.qa.test.ts` com `ReadableStream`; sugerir corrigir o teste do dev.
+7. (observação) Nome do falante com `<b` solto (`<v Nome<b>x</b>>`) mantém o fragmento `<b` — não é tag nem PII; cosmético.
+
+### Cobertura dos critérios (M3)
+| Critério | Cobertura |
+|---|---|
+| Capacidades independentes; authorize no conjunto exato; proibidos recusados | ok — m3-consent(.qa), routes.m3 |
+| Refresh por conjunto; recuo em cascata sem derrubar agenda/e-mail; invalid_grant → REAUTH | ok — m3-consent(.qa) |
+| Só a conta do gestor organizador; consultor com Teams nunca chamado; `not_organizer` sem baixar | ok — run.test + run.qa |
+| Filtro JoinWebUrl: aspas, encoding, link original do Graph | ok para o formato típico; **achado 3** nas variações |
+| Máquina de estados, backoff 15/30/60/120 até 6 h, FAILED após 48 h | ok — schedule.test + run.qa |
+| 403 → 24 h, inclusive botão | ok em WAITING; **achado 1** (FAILED após 24 h do fim) |
+| Claim/lease com dono, GENERATING vencido retomado, idempotência | ok — run.test, db/m365-transcripts.test, run.qa |
+| Precedência: espera de 1 h, não sobrescreve, complemento condicional | ok; **achado 2** (cards duplicados no complemento) |
+| VTT hostil linear < 1 s, teto 5 MB (bytes, total), VTT nunca persistido | ok — vtt(.qa), client-teams.qa, run.qa; achado 5 |
+| Máscara antes da IA; desmascarar só em memória; `truncateAtSpace` em toda posição | ok — truncate.test, vtt.qa, run.qa; achado 4 (tag) |
+| Job com CRON_SECRET; flag inerte | ok — route(.qa).test, m365-actions.m3.test |
+| Falha de IA (null/lança), 429/Retry-After | ok — run.test, run.qa, client-teams.qa |
+
+## Fase M3 — correções
+
+Data: 2026-11-26. Achados de "## Fase M3 — testes"; os 7 `it.fails` viraram `it` e passam.
+
+**Importantes**
+1. **Bloqueio de 24 h após 403, para job e botão, em qualquer status.** Coluna nova
+   `CheckpointTeamsTranscript.accessDeniedAt`, adicionada na própria migration
+   `20261126150100_m365_transcricao_teams` (ainda não aplicada). O SQL foi conferido com o `migrate diff` a partir da
+   cópia do schema anterior: idêntico.
+   - `planAfterMiss` devolve o instante do 403 (`accessDeniedAt`), e `recordAttempt` o grava.
+   - `accessBlocked()` (`schedule.ts`) é checado no início de toda tentativa (`attempt`) e no botão: nenhuma consulta
+     por 24 h a partir do 403, seja WAITING ou FAILED. Antes o bloqueio dependia de `nextAttemptAt`.
+2. **Complemento não duplica cards.**
+   - Ações: `filterNewActionItems` (puro, `lib/checkpoint/action-items.ts`).
+     - Mesma ação = título normalizado igual (minúsculas, sem acento nem pontuação) + responsável e prazo compatíveis
+       (iguais, ou ausentes de um dos lados; o prazo compara `dueDate` AAAA-MM-DD com `dueText`).
+     - Contam todos os status existentes: PENDING, ACCEPTED e DONE, e um DISMISSED nunca é reaberto.
+     - Também remove duplicatas dentro do próprio lote.
+     - Aplicada na transação do `saveTranscriptMinutes` (lê os cards do checkpoint na mesma `tx`) e no store em memória.
+       A auditoria conta `actionItemsSkippedAsDuplicate`.
+   - Oportunidades/Cases/Skills: verifiquei o pipeline. Ele apaga e recria os PENDING (não duplica PENDING), mas
+     recriava como PENDING uma Oportunidade/Case já ACCEPTED/DISMISSED, e o upsert de Skill **reabria** sugestão decidida.
+     - Nova opção `runCheckpointExtraction({ preserveDecided: true })`: pula Oportunidade/Case cujo título normalizado
+       já foi decidido no checkpoint, pula Skill decidida (mesmo consultor/semana/nome) e remove duplicatas do lote.
+     - O runtime do M365 (M2 e M3, inclusive o complemento) passa a opção. O "Reprocessar" manual da F4 mantém o
+       comportamento original (teste garante).
+     - Contagens e auditoria refletem o que foi criado.
+
+**Menores**
+3. **joinUrl original.**
+   - `sanitizeJoinUrl` passa a guardar o link **byte a byte como veio do Graph**. A validação continua sobre o parse:
+     https, host permitido e sem credenciais. Também recusa link com espaço/controle ou acima de 2048 caracteres.
+   - Sem coluna nova: a forma normalizada não era usada em nenhum outro lugar (não é exibida); o `joinUrl` só serve
+     ao filtro `JoinWebUrl`.
+4. **Tags removidas antes de qualquer corte** (`vtt.ts`).
+   - A linha crua é lida até 64 000 caracteres. Voz e tags saem primeiro, e só depois o texto limpo é cortado em 4 000
+     com `truncateAtSpace`.
+   - Se a linha crua (ou a entrada, no teto de 6 M) foi cortada, `dropPartialTail` descarta o último bloco e a cauda
+     numérica.
+   - `stripTags`: no VTT, `<` cru é sempre marcação (o literal vem como `&lt;`). Por isso:
+     - a tag sai inteira, de qualquer tamanho (salto direto ao `>`, linear);
+     - `<` sem `>` descarta o resto da linha, então nunca sobra fragmento.
+5. **Fala única acima do teto.**
+   - Na saída 70/30, uma fala que sozinha passa de metade do orçamento é cortada 70/30 **dentro dela**:
+     `truncateAtSpace` no início e `safeTailSlice` (novo, `text-safe.ts`) no fim, que nunca começa no meio de um dado.
+     O marcador é `[… trecho da fala omitido …]`.
+   - Os marcadores não contam como conteúdo: texto abaixo de `MIN_SOURCE_CHARS` → `empty_transcript`
+     (WAITING_TRANSCRIPT recuperável, mesmo critério da M2), nunca ata "com sucesso".
+6. `graph/client-teams.test.ts`: o caso de stream usa `ReadableStream` de verdade (pedaços sem content-length). Ele
+   confere `content_too_large` e que o stream é cancelado logo depois do teto.
+
+**Testes novos (dev):** em `transcripts/run.test.ts`:
+- 403 após 24 h do fim, com botão e job bloqueados;
+- complemento sem duplicar ação;
+- VTT só com bloco gigante → WAITING sem IA;
+- monólogo com 70/30 dentro da fala.
+
+Também:
+- `truncate.test.ts`: `dropPartialTail`/`safeTailSlice` em todas as posições, lineares;
+- `db/m365-transcripts.test.ts`: dedup na transação;
+- `checkpoint/run-extraction.test.ts`: `preserveDecided` e o manual inalterado.
+
+Ajustados: `vtt.test.ts` (`<` sem `>` agora descarta o resto) e `schedule.test.ts` (plano com `accessDeniedAt`).
+
+**Validação:**
+- vitest M365/Checkpoint/rotas/templates: 102 arquivos, 1377 testes passando.
+- Suíte completa: 4017 passando. As 15 falhas em 8 arquivos são o baseline (`next-auth`/`next/server`).
+- `tsc`: só os 10 erros de `inbound.test.ts`. eslint limpo.
+- `prisma validate` e `db:generate` ok (com URLs fictícias, nada contra banco).
+
+**Riscos remanescentes**
+- A dedup de ações aceita "responsável/prazo ausente de um lado" como compatível: pode suprimir uma ação legítima
+  quase igual sem responsável. É o lado conservador; o gestor cria à mão.
+- `preserveDecided` compara só o título normalizado: uma Oportunidade reformulada pela IA ainda pode nascer PENDING de
+  novo.
+- O `joinUrl` original continua pendente de validação no Azure (formato real × `joinWebUrl`).
+
+## Fase M3 — correções 2
+
+Data: 2026-11-26. Corrige a reprovação do validador. O caso B1 era um registro preso em GENERATING com lease nulo,
+o que também travava a ata por e-mail. A reprodução `scratchpad/hostile/stuck.cjs` agora termina em DONE na rodada
+seguinte, com "email waits at +3 days: false". Não houve mudança de schema.
+
+**B1 — GENERATING órfão (todas as frentes)**
+1. **`attempt` (`transcripts/run.ts`).**
+   - O heartbeat da conexão (`renewManagerLease`) passa a rodar ANTES de `markGenerating`. Se o lease for perdido
+     ali, o estado não muda.
+   - O `finally` chama `releaseClaim(id, owner, ifGenerating, now)`: se este dono ainda segura o registro em
+     GENERATING (erro da conexão, lease perdido, exceção), o registro volta a WAITING_TRANSCRIPT com o backoff de
+     `planAfterMiss(transient)`, ou a FAILED fora de 48 h, com `lastError: "interrupted"` e `attempts+1`. Depois o
+     lease é solto.
+   - No Prisma são dois `updateMany` condicionados ao dono; no store em memória, o espelho.
+2. **`listDue`** (Prisma e memória) retoma GENERATING com lease **nulo ou vencido**.
+3. **`emailShouldWaitForTeams`:**
+   - DONE segura o e-mail;
+   - GENERATING só segura com lease **vivo** e dentro de 48 h;
+   - todo o resto também só dentro de 48 h (a espera de 1 h continua).
+   - `MinutesCheckpoint.teamsLeaseUntil` vem do banco (`m365-minutes.ts`).
+4. **Botão:** `teamsAction` só esconde em GENERATING com lease vivo; órfão (nulo ou vencido) libera.
+5. **Varredura `expireStale`**, no início de cada rodada do job: registros PENDING/WAITING_TRANSCRIPT/GENERATING sem
+   lease vivo, cujo evento terminou há mais de 48 h (ou cujo evento sumiu por SetNull), vão para NO_TRANSCRIPT
+   `expired`. Cobre o caso em que o job deixa de vê-los (conexão pausada, Teams retirado, gestor sem papel).
+
+**Tabela de estados → saídas** (nenhum estado sem saída):
+
+| Estado | Saídas | Quem/como |
+|---|---|---|
+| PENDING | WAITING_TRANSCRIPT, GENERATING, NO_TRANSCRIPT, FAILED | job (claim quando `nextAttemptAt` vence) ou botão; varredura → NO_TRANSCRIPT `expired` após 48 h |
+| WAITING_TRANSCRIPT | WAITING_TRANSCRIPT, GENERATING, NO_TRANSCRIPT, FAILED | idem; 403 bloqueia 24 h (`accessDeniedAt`) e depois volta a ser devido; varredura após 48 h |
+| GENERATING | DONE, FAILED (`checkpoint_changed`), WAITING_TRANSCRIPT (falha da geração ou interrupção, no `finally`) | a própria rodada; crash do processo → lease vence → `listDue` retoma (lease nulo também); varredura após 48 h |
+| DONE | — (final) | botão responde `already_done` |
+| NO_TRANSCRIPT | WAITING/GENERATING/DONE pelo **botão** (reabre até 48 h) | final para o job |
+| FAILED | idem NO_TRANSCRIPT (exceto durante as 24 h após um 403) | final para o job |
+
+**Menores**
+- **M1** (`vtt.ts`): uma anotação de voz com `<` dentro (`<v …<…>`) faz a linha inteira ser descartada (sem nome nem
+  fragmento). Um nome longo demais (`>` a mais de 200 caracteres) fica sem falante, e a fala segue. Resultado de
+  `scratchpad/hostile/frag.cjs`: 5340 execuções, 0 vazamentos. `perf.cjs`: todos os casos em ≤ 60 ms.
+- **M2** (`client.ts`): `onlineMeetingFilterUrl` revalida o allowlist de hosts do Teams e recusa credenciais na URL.
+- **M3:** o rótulo de PENDING passa a ser "Aguardando a primeira consulta".
+
+**Testes**
+- Novos em `run.test.ts`:
+  - lease perdido logo após o claim, com a rodada seguinte retomando até DONE;
+  - erro da conexão depois de GENERATING → WAITING `interrupted` com backoff e lease solto;
+  - GENERATING com lease nulo retomado;
+  - varredura de 48 h;
+  - o e-mail não fica bloqueado por GENERATING órfão.
+- Novos também em `schedule.test.ts`, `vtt.test.ts` (anotação malformada), `client-teams.test.ts` (hosts) e
+  `db/m365-transcripts.test.ts` (`releaseClaim`, `listDue` com lease nulo e `expireStale`).
+- Ajustado ao comportamento novo `run.qa.test.ts` (GENERATING só segura o e-mail com lease vivo). Também o caso
+  hostil de 4 MB, cujas linhas com voz malformada agora são descartadas.
+
+**Validação**
+- vitest M365/Checkpoint/rotas/templates: 102 arquivos, 1385 testes passando.
+- Suíte completa: 4025 passando. As 15 falhas em 8 arquivos são o baseline.
+- `tsc`: só os 10 erros de `inbound.test.ts`. eslint limpo. `prisma validate` ok.
+
+## Fase M3 — veredito do validador
+
+1ª validação: REPROVADO — registro preso em GENERATING com lease nulo, bloqueando também a ata por e-mail (B1).
+Revalidação após "correções 2": **APROVADO COM RESSALVAS** — nenhum estado sem saída (verificado no código, com corridas); 5.340 cortes sem vazamento de PII; VTT hostil ≤ 55 ms.
+Menores remanescentes (não bloqueantes):
+1. `expireStale` pode expirar execução manual iniciada perto das 48 h e mais longa que o lease (termina em lease_lost, sem corromper dado) — exigir lease vencido há > 10 min.
+2. Status DONE segura o e-mail sempre: se o gestor apagar as notas da transcrição, a ata automática por e-mail não volta (busca manual segue). Intencional.
+3. `expireStale` só roda no job de transcrições — depende do agendamento no Railway.
+
+## Pendências de deploy da trilha (consolidado)
+- Feature flag `M365_INTEGRATION_ENABLED` (desligada por padrão) + envs M365 do `.env.example`.
+- App Entra: Redirect URI `${AUTH_URL}/api/integrations/m365/callback`; permissões delegadas Calendars.Read, Mail.Read, OnlineMeetings.Read, OnlineMeetingTranscript.Read.All (admin consent para a última).
+- Crons no Railway: `/api/jobs/m365-calendar-sync`, `/api/jobs/m365-meeting-minutes`, `/api/jobs/m365-teams-transcripts` (Bearer CRON_SECRET).
+- Validação real no Azure: ver pendências listadas em cada fase (delta, $search, JoinWebUrl, consentimento retirado, formato real do VTT).

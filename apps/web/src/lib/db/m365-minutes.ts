@@ -1,6 +1,12 @@
 import { Prisma, prisma } from "@jumpflow/database";
 import type { ExtractionRow } from "@/lib/checkpoint/run-extraction";
 import type { CheckpointM365View } from "@/lib/checkpoint/action-items";
+import { hasTeamsScopes } from "@/lib/m365/scopes";
+import {
+  isOrganizedBy,
+  transcriptEligibility,
+  transcriptMode,
+} from "@/lib/m365/transcripts/schedule";
 import type {
   EmailMinutesStatus,
   MinutesCheckpoint,
@@ -35,8 +41,11 @@ const CHECKPOINT_SELECT = {
   transcription: true,
   audioStorageKey: true,
   occurredAt: true,
-  calendarEvent: { select: { subject: true, startAt: true, endAt: true, isCancelled: true } },
+  calendarEvent: {
+    select: { subject: true, startAt: true, endAt: true, isCancelled: true, joinUrl: true, organizerEmail: true },
+  },
   emailMinutes: { select: { status: true } },
+  teamsTranscript: { select: { status: true, leaseUntil: true } },
 } satisfies Prisma.CheckpointSelect;
 
 type Row = Prisma.CheckpointGetPayload<{ select: typeof CHECKPOINT_SELECT }>;
@@ -58,6 +67,10 @@ function toMinutesCheckpoint(row: Row): MinutesCheckpoint | null {
     eventEndAt: row.calendarEvent.endAt,
     eventCancelled: row.calendarEvent.isCancelled,
     minutesStatus: row.emailMinutes?.status ?? null,
+    eventJoinUrl: row.calendarEvent.joinUrl,
+    eventOrganizerEmail: row.calendarEvent.organizerEmail,
+    teamsStatus: row.teamsTranscript?.status ?? null,
+    teamsLeaseUntil: row.teamsTranscript?.leaseUntil ?? null,
   };
 }
 
@@ -281,6 +294,56 @@ export async function loadExtractionRow(checkpointId: string): Promise<Extractio
 
 // ── Leitura para a tela do Checkpoint ────────────────────────────────────────
 
+/** Ação de transcrição disponível ao viewer (só o gestor, Teams ativo, organizador). */
+function teamsAction(
+  row: {
+    managerUserId: string | null;
+    status: "DRAFT" | "RECORDED" | "EXTRACTED" | "ARCHIVED";
+    notes: string | null;
+    transcription: string | null;
+    audioStorageKey: string | null;
+    calendarEvent: { joinUrl: string | null; organizerEmail: string | null; endAt: Date; isCancelled: boolean } | null;
+    teamsTranscript: { status: string; leaseUntil: Date | null } | null;
+  },
+  viewerUserId: string | null,
+  viewerTeams: string[] | null,
+  now: Date,
+): "generate" | "supplement" | null {
+  if (!viewerUserId || row.managerUserId !== viewerUserId || !viewerTeams || !row.calendarEvent) return null;
+  if (row.teamsTranscript?.status === "DONE") return null;
+  // GENERATING só esconde o botão com lease VIVO; órfão (nulo/vencido) libera.
+  if (
+    row.teamsTranscript?.status === "GENERATING" &&
+    row.teamsTranscript.leaseUntil &&
+    row.teamsTranscript.leaseUntil.getTime() > now.getTime()
+  ) {
+    return null;
+  }
+  if (!isOrganizedBy({ eventOrganizerEmail: row.calendarEvent.organizerEmail }, viewerTeams)) return null;
+  const eligibility = transcriptEligibility(
+    {
+      checkpointStatus: row.status,
+      notes: row.notes,
+      transcription: row.transcription,
+      audioStorageKey: row.audioStorageKey,
+      eventJoinUrl: row.calendarEvent.joinUrl,
+      eventOrganizerEmail: row.calendarEvent.organizerEmail,
+      eventEndAt: row.calendarEvent.endAt,
+      eventCancelled: row.calendarEvent.isCancelled,
+    },
+    viewerTeams,
+    now,
+  );
+  if (eligibility !== "ok") return null;
+  return transcriptMode({
+    checkpointStatus: row.status,
+    notes: row.notes,
+    transcription: row.transcription,
+    audioStorageKey: row.audioStorageKey,
+  }) === "GENERATE"
+    ? "generate"
+    : "supplement";
+}
 
 /**
  * Painéis M365 dos checkpoints cujo CRU o viewer pode ver (o chamador filtra
@@ -297,6 +360,11 @@ export async function loadCheckpointM365Views(
       id: true,
       managerUserId: true,
       calendarEventId: true,
+      status: true,
+      notes: true,
+      transcription: true,
+      audioStorageKey: true,
+      calendarEvent: { select: { joinUrl: true, organizerEmail: true, endAt: true, isCancelled: true } },
       emailMinutes: {
         select: {
           status: true,
@@ -308,12 +376,36 @@ export async function loadCheckpointM365Views(
           lastCheckedAt: true,
         },
       },
+      teamsTranscript: {
+        select: {
+          status: true,
+          mode: true,
+          lastError: true,
+          aiSummary: true,
+          truncated: true,
+          lastCheckedAt: true,
+          nextAttemptAt: true,
+          leaseUntil: true,
+        },
+      },
       actionItems: {
         orderBy: [{ createdAt: "asc" }],
         select: { id: true, title: true, ownerText: true, dueDate: true, dueText: true, sourceQuote: true, status: true },
       },
     },
   });
+  // Conexão do VIEWER (só a dele): Teams ativo + caixa para conferir o organizador.
+  const viewerConnection = viewerUserId
+    ? await prisma.m365Connection.findUnique({
+        where: { userId: viewerUserId },
+        select: { status: true, scopes: true, mailbox: true, user: { select: { email: true } } },
+      })
+    : null;
+  const viewerTeams =
+    viewerConnection?.status === "ACTIVE" && hasTeamsScopes(viewerConnection.scopes)
+      ? [viewerConnection.mailbox, viewerConnection.user.email].filter((e): e is string => Boolean(e))
+      : null;
+  const now = new Date();
   const out: Record<string, CheckpointM365View> = {};
   for (const row of rows) {
     out[row.id] = {
@@ -328,6 +420,18 @@ export async function loadCheckpointM365Views(
             attachmentsUsed: row.emailMinutes.attachmentsUsed,
             attachmentsSkipped: row.emailMinutes.attachmentsSkipped,
             lastCheckedAt: row.emailMinutes.lastCheckedAt?.toISOString() ?? null,
+          }
+        : null,
+      teams: row.calendarEvent?.joinUrl
+        ? {
+            status: row.teamsTranscript?.status ?? null,
+            mode: row.teamsTranscript?.mode ?? null,
+            lastError: row.teamsTranscript?.lastError ?? null,
+            aiSummary: row.teamsTranscript?.aiSummary ?? false,
+            truncated: row.teamsTranscript?.truncated ?? false,
+            lastCheckedAt: row.teamsTranscript?.lastCheckedAt?.toISOString() ?? null,
+            nextAttemptAt: row.teamsTranscript?.nextAttemptAt?.toISOString() ?? null,
+            action: teamsAction(row, viewerUserId, viewerTeams, now),
           }
         : null,
       actionItems: row.actionItems.map((a) => ({

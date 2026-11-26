@@ -21,7 +21,12 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/lib/auth/current-user", () => ({ getCurrentUser: vi.fn(async () => h.currentUser) }));
 vi.mock("@/lib/db/users", () => ({ resolveDbUser: vi.fn(async () => h.dbUser) }));
-vi.mock("@/lib/db/m365", () => ({ logM365Event: h.logM365Event, upsertM365Connection: h.upsertM365Connection }));
+vi.mock("@/lib/db/m365", () => ({
+  logM365Event: h.logM365Event,
+  upsertM365Connection: h.upsertM365Connection,
+  // M3: escopos já consentidos (o connect soma a capacidade pedida a eles).
+  getM365GrantedScopes: vi.fn(async () => [] as string[]),
+}));
 vi.mock("@/lib/db/audit", () => ({ recordAuditEvent: h.recordAuditEvent }));
 vi.mock("next/headers", () => ({
   cookies: async () => ({ get: (name: string) => (name === "m365_oauth" && h.cookieValue ? { name, value: h.cookieValue } : undefined) }),
@@ -123,7 +128,8 @@ describe("Ativar atas por e-mail (consentimento incremental)", () => {
 
   it("fase desconhecida na URL = M1 (nunca pede escopo além)", async () => {
     stubMicrosoft("openid");
-    const res = await connect.GET(new Request("https://flow.example.com/api/integrations/m365/connect?fase=M3"));
+    // M3 passou a existir (transcrições do Teams): o desconhecido agora é M9.
+    const res = await connect.GET(new Request("https://flow.example.com/api/integrations/m365/connect?fase=M9"));
     const location = new URL(res.headers.get("location")!);
     expect(location.searchParams.get("scope")).toBe("openid profile offline_access User.Read Calendars.Read");
   });

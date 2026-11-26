@@ -74,15 +74,26 @@ export function parseGraphUtc(value: string | null | undefined): Date | null {
   return Number.isFinite(ms) ? new Date(ms) : null;
 }
 
-/** Mantém só links https de reunião do Teams em host permitido. */
+/** Teto do link de entrada guardado (o mesmo do filtro do Graph). */
+const JOIN_URL_MAX_CHARS = 2048;
+
+/**
+ * Mantém só links https de reunião do Teams em host permitido. A validação é
+ * feita sobre o PARSE (`new URL`), mas o valor guardado é o link ORIGINAL, byte
+ * a byte como o Graph devolveu: o filtro `JoinWebUrl eq '…'` da M3 compara
+ * exatamente esse texto (a forma normalizada pode diferir em `{"…"}`, caixa do
+ * host ou `:443`). Link com espaço/controle, credenciais ou > 2048 → null.
+ */
 export function sanitizeJoinUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
+  if (!value || value.length > JOIN_URL_MAX_CHARS) return null;
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value.charCodeAt(i);
+    if (c <= 0x20 || c === 0x7f) return null;
+  }
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:") return null;
-    return ALLOWED_TEAMS_JOIN_HOSTS.includes(url.hostname.toLowerCase())
-      ? url.toString()
-      : null;
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    return ALLOWED_TEAMS_JOIN_HOSTS.includes(url.hostname.toLowerCase()) ? value : null;
   } catch {
     return null;
   }

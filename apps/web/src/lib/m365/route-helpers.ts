@@ -13,7 +13,7 @@ import { M365_OAUTH_COOKIE, M365_OAUTH_COOKIE_PATH } from "./oauth";
  */
 export function redirectToAccount(
   base: string | null,
-  result: { ok: true; status?: "conectado" | "atas_ativadas" } | { ok: false; code: M365ErrorCode },
+  result: { ok: true; status?: "conectado" | "atas_ativadas" | "transcricoes_ativadas" } | { ok: false; code: M365ErrorCode },
 ): NextResponse {
   const query = new URLSearchParams(
     result.ok ? { status: result.status ?? "conectado" } : { erro: result.code },

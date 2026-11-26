@@ -4,7 +4,8 @@ import { isM365Enabled, resolveM365Credentials } from "./config";
 import { syncCalendarConnection, type CalendarSyncResult } from "./calendar/sync";
 import { createHttpGraphClient } from "./graph/client";
 import { GraphError } from "./graph/errors";
-import type { MinutesDeps, MinutesJobSummary } from "./minutes/run";
+import type { MaskedExtractionInput, MinutesDeps, MinutesJobSummary } from "./minutes/run";
+import type { TranscriptDeps, TranscriptJobSummary } from "./transcripts/run";
 import type { M365ConnectionRecord, M365Store } from "./store";
 import { createTokenProvider } from "./tokens";
 
@@ -96,28 +97,35 @@ export async function syncConnectionNow(connectionId: string): Promise<CalendarS
 
 // ── M2: atas por e-mail ──────────────────────────────────────────────────────
 
+/** Extração existente (F4) com o texto MASCARADO + mapa desta execução. */
+async function maskedExtraction(checkpointId: string, input: MaskedExtractionInput): Promise<string> {
+  const { loadExtractionRow } = await import("@/lib/db/m365-minutes");
+  const { runCheckpointExtraction } = await import("@/lib/checkpoint/run-extraction");
+  const row = await loadExtractionRow(checkpointId);
+  if (!row) return "skipped";
+  const result = await runCheckpointExtraction(row, {
+    actorUserId: null,
+    masked: { notes: input.maskedNotes, transcription: input.maskedTranscription, piiMap: input.piiMap },
+    // Reextração automática (inclusive o complemento do Teams) nunca recria
+    // nem reabre Oportunidade/Case/Skill já decididos.
+    preserveDecided: true,
+  });
+  return result.status;
+}
+
 async function minutesDeps(owner: string, deadline: number): Promise<MinutesDeps> {
   const { prismaM365Store } = await import("@/lib/db/m365");
-  const { prismaMinutesStore, loadExtractionRow } = await import("@/lib/db/m365-minutes");
+  const { prismaMinutesStore } = await import("@/lib/db/m365-minutes");
   const { getAiTextProvider } = await import("@/lib/ai/provider");
-  const { runCheckpointExtraction } = await import("@/lib/checkpoint/run-extraction");
   return {
     store: prismaM365Store,
     minutes: prismaMinutesStore,
     graphFor: httpGraphFor(prismaM365Store, owner, deadline),
     // Sempre via a fábrica (DeepSeek → Gemini); nunca um provider direto.
     ai: getAiTextProvider(),
-    runExtraction: async (checkpointId, input) => {
-      const row = await loadExtractionRow(checkpointId);
-      if (!row) return "skipped";
-      // A IA da extração recebe a ata/fonte MASCARADAS desta execução; os cards
-      // são desmascarados com o mesmo mapa antes de gravar.
-      const result = await runCheckpointExtraction(row, {
-        actorUserId: null,
-        masked: { notes: input.maskedNotes, transcription: input.maskedTranscription, piiMap: input.piiMap },
-      });
-      return result.status;
-    },
+    // A IA da extração recebe a ata/fonte MASCARADAS desta execução; os cards
+    // são desmascarados com o mesmo mapa antes de gravar.
+    runExtraction: maskedExtraction,
     owner,
     deadline,
   };
@@ -151,4 +159,37 @@ export async function chooseCheckpointMinutesMessage(checkpointId: string, messa
     actorUserId,
     await minutesDeps(`user:${randomUUID()}`, Date.now() + JOB_ROUND_MS),
   );
+}
+
+// ── M3: transcrição do Teams ─────────────────────────────────────────────────
+
+async function transcriptDeps(owner: string, deadline: number): Promise<TranscriptDeps> {
+  const { prismaM365Store } = await import("@/lib/db/m365");
+  const { prismaTranscriptStore } = await import("@/lib/db/m365-transcripts");
+  const { getAiTextProvider } = await import("@/lib/ai/provider");
+  return {
+    store: prismaM365Store,
+    transcripts: prismaTranscriptStore,
+    graphFor: httpGraphFor(prismaM365Store, owner, deadline),
+    // Sempre via a fábrica (DeepSeek → Gemini); nunca um provider direto.
+    ai: getAiTextProvider(),
+    runExtraction: maskedExtraction,
+    owner,
+    deadline,
+  };
+}
+
+/** Job cron das transcrições do Teams (claim por registro + lease da conexão do gestor). */
+export async function runTeamsTranscriptsJob(
+  options: { limit?: number; roundMs?: number } = {},
+): Promise<TranscriptJobSummary> {
+  const deadline = Date.now() + (options.roundMs ?? JOB_ROUND_MS);
+  const { runTranscriptRound } = await import("./transcripts/run");
+  return runTranscriptRound(await transcriptDeps(`job:${randomUUID()}`, deadline), options.limit ?? 50);
+}
+
+/** "Buscar/Complementar com a transcrição do Teams" (só o gestor do checkpoint). */
+export async function fetchCheckpointTranscriptNow(checkpointId: string, actorUserId: string) {
+  const { fetchTranscriptNow } = await import("./transcripts/run");
+  return fetchTranscriptNow(checkpointId, actorUserId, await transcriptDeps(`user:${randomUUID()}`, Date.now() + JOB_ROUND_MS));
 }

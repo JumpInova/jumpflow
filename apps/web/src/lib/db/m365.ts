@@ -35,6 +35,7 @@ const CONNECTION_SELECT = {
   expiresAt: true,
   scopes: true,
   mailbox: true,
+  graphUserId: true,
   calendarDeltaLink: true,
   calendarWindowStart: true,
   calendarWindowEnd: true,
@@ -635,6 +636,16 @@ export async function getM365ConnectionView(userId: string): Promise<M365Connect
     lastErrorAt: row.lastErrorAt?.toISOString() ?? null,
     syncing: Boolean(row.syncLeaseUntil && row.syncLeaseUntil > new Date()),
   };
+}
+
+/**
+ * Escopos já consentidos (para o consentimento INCREMENTAL somar a capacidade
+ * nova às existentes). Desconectado = nada (reconectar começa do zero).
+ */
+export async function getM365GrantedScopes(userId: string): Promise<string[]> {
+  const row = await prisma.m365Connection.findUnique({ where: { userId }, select: { status: true, scopes: true } });
+  if (!row || row.status === "DISCONNECTED") return [];
+  return row.scopes;
 }
 
 export async function findConnectionIdForUser(userId: string): Promise<string | null> {

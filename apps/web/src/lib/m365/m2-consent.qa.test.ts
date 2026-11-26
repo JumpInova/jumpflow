@@ -66,8 +66,16 @@ const M2_STR = M2_SCOPES.join(" ");
 afterEach(() => vi.restoreAllMocks());
 
 describe("refresh: escopo exatamente da fase consentida, nunca além", () => {
-  it("escopos gravados com resíduo de fase futura (OnlineMeetings/Transcript) → pede só M2", async () => {
+  it("escopos gravados com e-mail + Teams (M3 consentida) → pede exatamente esse conjunto", async () => {
+    // Antes da M3 isso era "resíduo de fase futura"; agora é capacidade consentida.
     const { store } = conn([...M2_SCOPES, "OnlineMeetings.Read", "OnlineMeetingTranscript.Read.All"]);
+    const te = tokenEndpoint(() => ok(M2_STR));
+    await (await provider(store, te.fetch)).refresh();
+    expect(te.scopes).toEqual([`${M2_STR} OnlineMeetings.Read OnlineMeetingTranscript.Read.All`]);
+  });
+
+  it("só UM dos escopos do Teams gravado → Teams não conta como consentido (pede só M2)", async () => {
+    const { store } = conn([...M2_SCOPES, "OnlineMeetings.Read"]);
     const te = tokenEndpoint(() => ok(M2_STR));
     await (await provider(store, te.fetch)).refresh();
     expect(te.scopes).toEqual([M2_STR]);

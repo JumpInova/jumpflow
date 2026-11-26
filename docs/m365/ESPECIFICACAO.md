@@ -221,6 +221,14 @@ conteúdo pessoal.
   mascarar → mesma geração de ata e cards da M2.
 - Máquina de estados persistida e testada:
   `PENDING → WAITING_TRANSCRIPT → GENERATING → DONE | NO_TRANSCRIPT | FAILED`.
+- Decisões (M3):
+  - consentimento por **conjunto de capacidades** (agenda + e-mail? + Teams?), não por
+    fases lineares: M1+Teams sem e-mail é válido; o pedido soma a capacidade nova às já
+    consentidas; o refresh recua em `consent_required` (sem Teams → sem e-mail → base);
+  - precedência: o job de atas por e-mail espera até 1 h após o fim (ou enquanto a
+    transcrição está em GENERATING) quando a reunião é Teams organizada pelo gestor com
+    Teams ativo; depois disso o e-mail segue e a transcrição só complementa (ação do gestor);
+  - job próprio `/api/jobs/m365-teams-transcripts` (CRON_SECRET).
 
 ### M4 — (próxima rodada, fora desta execução)
 - Notificações e aprovação via Teams.

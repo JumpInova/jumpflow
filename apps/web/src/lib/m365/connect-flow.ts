@@ -20,11 +20,16 @@ import {
   type TokenSet,
 } from "./oauth";
 import {
-  PHASE_SCOPES,
+  PHASE_CAPABILITY,
   grantedForbiddenScopes,
   hasCalendarScope,
   hasMailScope,
+  hasTeamsScopes,
+  isCapabilityList,
   isM365Phase,
+  normalizeCapabilities,
+  scopesForCapabilities,
+  type M365Capability,
   type M365Phase,
 } from "./scopes";
 
@@ -44,10 +49,17 @@ export interface StartInput {
   stateSecret: string;
   nowMs?: number;
   /**
-   * Fase a consentir (padrão M1). M2 = consentimento INCREMENTAL de `Mail.Read`
-   * ("Ativar atas por e-mail"); pede os escopos da fase inteira (M1 + Mail.Read).
+   * Fase a consentir (padrão M1) — rótulo do pedido. M2 = consentimento
+   * INCREMENTAL de `Mail.Read` ("Ativar atas por e-mail"); M3 = dos escopos do
+   * Teams ("Ativar transcrições do Teams").
    */
   phase?: M365Phase;
+  /**
+   * Conjunto EXATO de capacidades pedido (o já consentido + o da fase). Sem
+   * ele, só a capacidade da fase. Os escopos pedidos são exatamente
+   * `scopesForCapabilities(capabilities)`.
+   */
+  capabilities?: readonly M365Capability[];
 }
 
 export interface StartOutput {
@@ -63,14 +75,16 @@ export function startM365Connect(input: StartInput): StartOutput {
   const nonce = createNonce();
   const pkce = createPkcePair();
   const phase: M365Phase = input.phase ?? "M1";
+  const extra = PHASE_CAPABILITY[phase];
+  const caps = normalizeCapabilities([...(input.capabilities ?? []), ...(extra ? [extra] : [])]);
   const state = signState({ u: input.userId, n: nonce, e: exp }, input.stateSecret);
-  const cookie: OAuthCookiePayload = { nonce, verifier: pkce.verifier, userId: input.userId, exp, phase };
+  const cookie: OAuthCookiePayload = { nonce, verifier: pkce.verifier, userId: input.userId, exp, phase, caps };
   return {
     authorizeUrl: buildAuthorizeUrl({
       credentials: input.credentials,
       redirectUri: input.redirectUri,
-      scopes: PHASE_SCOPES[phase],
-      phase,
+      scopes: scopesForCapabilities(caps),
+      phase: caps,
       state,
       codeChallenge: pkce.challenge,
       loginHint: input.userEmail,
@@ -94,7 +108,12 @@ export function readOAuthCookie(value: string | undefined | null): OAuthCookiePa
     }
     // Cookie sem fase (fluxo iniciado antes da M2) = M1; valor estranho = recusa.
     if (parsed.phase !== undefined && !isM365Phase(parsed.phase)) return null;
-    return { ...parsed, phase: parsed.phase ?? "M1" };
+    if (parsed.caps !== undefined && !isCapabilityList(parsed.caps)) return null;
+    const phase = parsed.phase ?? "M1";
+    // Sem `caps` (cookie de antes da M3): só a capacidade da fase.
+    const extra = PHASE_CAPABILITY[phase];
+    const caps = normalizeCapabilities(parsed.caps ?? (extra ? [extra] : []));
+    return { ...parsed, phase, caps };
   } catch {
     return null;
   }
@@ -124,8 +143,15 @@ export interface ConnectedAccount {
   mailbox: string;
   /** Fase pedida neste consentimento (do cookie). */
   phase: M365Phase;
-  /** Pediu M2 mas `Mail.Read` não veio: a agenda conecta, as atas não. */
+  /** Conjunto de capacidades pedido (do cookie). */
+  capabilities: M365Capability[];
+  /** Pediu e-mail mas `Mail.Read` não veio: a agenda conecta, as atas não. */
   mailScopeMissing: boolean;
+  /**
+   * Pediu Teams mas os dois escopos não vieram (o admin do tenant ainda não
+   * consentiu `OnlineMeetingTranscript.Read.All`): o resto conecta.
+   */
+  teamsScopeMissing: boolean;
 }
 
 export interface CallbackDeps {
@@ -144,7 +170,11 @@ export async function completeM365Callback(
   deps: CallbackDeps,
 ): Promise<CallbackResult> {
   const nowMs = deps.nowMs ?? Date.now();
-  if (input.error) return { ok: false, code: "consent_denied" };
+  if (input.error) {
+    // Transcrições do Teams: o erro mais comum é a falta do consentimento de
+    // admin do tenant para `OnlineMeetingTranscript.Read.All` (mensagem própria).
+    return { ok: false, code: input.cookie?.phase === "M3" ? "teams_consent_denied" : "consent_denied" };
+  }
   if (!input.code || !input.state || !input.cookie) return { ok: false, code: "invalid_state" };
 
   const check = verifyState(input.state, input.stateSecret, nowMs);
@@ -160,6 +190,7 @@ export async function completeM365Callback(
   }
 
   const phase: M365Phase = input.cookie.phase ?? "M1";
+  const caps = normalizeCapabilities(input.cookie.caps ?? []);
   let tokens: TokenSet;
   try {
     tokens = await exchangeAuthorizationCode(
@@ -168,7 +199,7 @@ export async function completeM365Callback(
         code: input.code,
         codeVerifier: input.cookie.verifier,
         redirectUri: input.redirectUri,
-        scopes: PHASE_SCOPES[phase],
+        scopes: scopesForCapabilities(caps),
       },
     );
   } catch {
@@ -206,7 +237,9 @@ export async function completeM365Callback(
       graphUserId: me.id,
       mailbox,
       phase,
-      mailScopeMissing: phase === "M2" && !hasMailScope(tokens.scopes),
+      capabilities: caps,
+      mailScopeMissing: caps.includes("MAIL") && !hasMailScope(tokens.scopes),
+      teamsScopeMissing: caps.includes("TEAMS") && !hasTeamsScopes(tokens.scopes),
     },
   };
 }

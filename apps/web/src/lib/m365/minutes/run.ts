@@ -1,14 +1,15 @@
 import type { AiTextProvider } from "@/lib/ai/provider";
-import { canRegisterCheckpoint } from "@/lib/checkpoint/visibility";
 import type { GraphClient } from "../graph/client";
 import { errorCode, isGraphError, isInterruption } from "../graph/errors";
-import { hasMailScope } from "../scopes";
 import {
-  ConnectionChangedError,
-  type M365ConnectionRecord,
-  type M365Store,
-  type UserContext,
-} from "../store";
+  renewManagerLease,
+  runWithManagerConnection,
+  type ManagerCtx,
+  type ManagerRunResult,
+} from "../manager-connection";
+import { hasTeamsScopes } from "../scopes";
+import { ConnectionChangedError, type M365ConnectionRecord, type M365Store } from "../store";
+import { emailShouldWaitForTeams, isOrganizedBy } from "../transcripts/schedule";
 import { extractAttachmentText, pickAttachments } from "./attachments";
 import { messageBodyToText } from "./body";
 import {
@@ -112,19 +113,7 @@ export type ProcessOutcome =
   | "not_eligible"
   | "not_candidate";
 
-export type ManagerRunResult<T> =
-  | { status: "ok"; value: T }
-  | { status: "skipped"; reason: "no_connection" | "not_active" | "no_mail_scope" | "not_manager" | "connection_changed" }
-  | { status: "busy" }
-  | { status: "interrupted"; code: string }
-  | { status: "error"; code: string };
-
-interface ManagerCtx {
-  connection: M365ConnectionRecord;
-  user: UserContext;
-  graph: GraphClient;
-  managerEmails: string[];
-}
+export type { ManagerRunResult, ManagerCtx };
 
 /** Rascunho elegível para receber a ata por e-mail agora? PURA. */
 export function isMinutesEligible(cp: MinutesCheckpoint, now: Date): boolean {
@@ -144,8 +133,7 @@ function nowOf(deps: MinutesDeps): Date {
 }
 
 async function renewLease(deps: MinutesDeps, connectionId: string): Promise<void> {
-  const until = new Date(nowOf(deps).getTime() + (deps.leaseMs ?? MINUTES_LEASE_MS));
-  if (!(await deps.store.renewSyncLease(connectionId, deps.owner, until))) throw new ConnectionChangedError();
+  await renewManagerLease(deps, connectionId);
 }
 
 /**
@@ -158,48 +146,7 @@ export async function withManagerConnection<T>(
   fn: (ctx: ManagerCtx) => Promise<T>,
 ): Promise<ManagerRunResult<T>> {
   const connectionId = await deps.minutes.connectionIdForUser(managerUserId);
-  if (!connectionId) return { status: "skipped", reason: "no_connection" };
-  const precheck = await deps.store.getConnection(connectionId);
-  if (!precheck || precheck.userId !== managerUserId) return { status: "skipped", reason: "no_connection" };
-  if (precheck.status !== "ACTIVE") return { status: "skipped", reason: "not_active" };
-  if (!hasMailScope(precheck.scopes)) return { status: "skipped", reason: "no_mail_scope" };
-  const user = await deps.store.getUserContext(managerUserId);
-  if (!user || !canRegisterCheckpoint(user.user.roles)) return { status: "skipped", reason: "not_manager" };
-
-  const now = nowOf(deps);
-  const until = new Date(now.getTime() + (deps.leaseMs ?? MINUTES_LEASE_MS));
-  if (!(await deps.store.claimSyncLease(connectionId, deps.owner, until, now))) return { status: "busy" };
-  const guard = { leaseOwner: deps.owner };
-  try {
-    // Relê depois do claim (tokens/escopos atuais).
-    const connection = await deps.store.getConnection(connectionId);
-    if (!connection || connection.status !== "ACTIVE") return { status: "skipped", reason: "not_active" };
-    if (!hasMailScope(connection.scopes)) return { status: "skipped", reason: "no_mail_scope" };
-    const managerEmails = [connection.mailbox, user.user.email]
-      .filter((e): e is string => Boolean(e))
-      .map((e) => e.toLowerCase());
-    const value = await fn({ connection, user, graph: deps.graphFor(connection), managerEmails });
-    return { status: "ok", value };
-  } catch (error) {
-    if (error instanceof ConnectionChangedError) return { status: "skipped", reason: "connection_changed" };
-    const code = errorCode(error);
-    if (isInterruption(error)) return { status: "interrupted", code };
-    if (isGraphError(error) && error.kind === "reauth") {
-      await deps.store.setStatus(connectionId, "REAUTH_REQUIRED", code, guard);
-    } else if (isGraphError(error) && error.kind === "config") {
-      await deps.store.setStatus(connectionId, "ERROR", code, guard);
-    }
-    await deps.store.logIntegrationEvent({
-      operation: "minutes.mail",
-      status: "FAILED",
-      entityType: "M365Connection",
-      entityId: connectionId,
-      error: code,
-    });
-    return { status: "error", code };
-  } finally {
-    await deps.store.releaseSyncLease(connectionId, deps.owner);
-  }
+  return runWithManagerConnection(managerUserId, connectionId, deps, { capability: "MAIL", logOperation: "minutes.mail" }, fn);
 }
 
 function selectionContext(
@@ -432,11 +379,30 @@ export interface MinutesJobSummary {
   busy: number;
   skipped: number;
   errors: number;
+  /** M3: adiados porque a transcrição do Teams tem precedência. */
+  deferred: number;
+}
+
+/**
+ * Precedência (M3): a transcrição do Teams vence o e-mail. O job espera
+ * enquanto a transcrição está sendo gerada, ou — reunião Teams organizada pelo
+ * gestor com Teams ativo — até 1 h após o fim sem resultado final. PURA.
+ */
+export function waitsForTeams(cp: MinutesCheckpoint, ctx: Pick<ManagerCtx, "connection" | "managerEmails">, now: Date): boolean {
+  return emailShouldWaitForTeams({
+    teamsStatus: cp.teamsStatus ?? null,
+    teamsLeaseUntil: cp.teamsLeaseUntil ?? null,
+    teamsEnabled: hasTeamsScopes(ctx.connection.scopes),
+    organizedByManager: isOrganizedBy({ eventOrganizerEmail: cp.eventOrganizerEmail ?? null }, ctx.managerEmails),
+    eventJoinUrl: cp.eventJoinUrl ?? null,
+    eventEndAt: cp.eventEndAt,
+    now,
+  });
 }
 
 /** Job: processa os rascunhos devidos, agrupados pela conta do gestor. */
 export async function runMinutesRound(deps: MinutesDeps, limit = 50): Promise<MinutesJobSummary> {
-  const summary: MinutesJobSummary = { checkpoints: 0, managers: 0, saved: 0, ambiguous: 0, none: 0, failed: 0, busy: 0, skipped: 0, errors: 0 };
+  const summary: MinutesJobSummary = { checkpoints: 0, managers: 0, saved: 0, ambiguous: 0, none: 0, failed: 0, busy: 0, skipped: 0, errors: 0, deferred: 0 };
   const now = nowOf(deps);
   const due = (await deps.minutes.listDueCheckpoints(now, limit)).filter((cp) => isMinutesEligible(cp, now));
   const byManager = new Map<string, MinutesCheckpoint[]>();
@@ -456,6 +422,10 @@ export async function runMinutesRound(deps: MinutesDeps, limit = 50): Promise<Mi
         summary.checkpoints += 1;
         if (!managerMatches(cp, ctx)) {
           summary.skipped += 1;
+          continue;
+        }
+        if (waitsForTeams(cp, ctx, nowOf(deps))) {
+          summary.deferred += 1;
           continue;
         }
         const outcome = await processOneSafely(cp, ctx, deps);

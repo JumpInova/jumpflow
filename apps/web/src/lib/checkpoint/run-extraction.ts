@@ -3,6 +3,7 @@ import { getAiTextProvider, type AiTextProvider } from "@/lib/ai/provider";
 import { recordAiUsage } from "@/lib/ai/log";
 import { recordAuditEvent } from "@/lib/db/audit";
 import { emptyPiiMap, maskPii, unmaskDeep, type PiiMap } from "@/lib/m365/minutes/pii";
+import { normalizeCardText } from "./action-items";
 import { isCheckpointAiEnabled } from "./flags";
 import {
   CHECKPOINT_EXTRACTION_MODEL,
@@ -72,12 +73,30 @@ export function resolveSkillWindow(row: {
   return { weekStart, weekEnd };
 }
 
+function uniqueByTitle<T extends { title: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((i) => {
+    const key = normalizeCardText(i.title);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export async function runCheckpointExtraction(
   row: ExtractionRow,
   options: {
     actorUserId: string | null;
     provider?: AiTextProvider;
     masked?: { notes: string | null; transcription: string | null; piiMap: PiiMap };
+    /**
+     * Reextração automática (atas do Microsoft 365, inclusive o complemento da
+     * transcrição do Teams): não recria Oportunidade/Case cujo título já foi
+     * DECIDIDO (ACCEPTED/DISMISSED) neste checkpoint, nem reabre SkillSuggestion
+     * já decidida. Os PENDING continuam sendo substituídos (sem duplicar). O
+     * "Reprocessar" manual da F4 mantém o comportamento original.
+     */
+    preserveDecided?: boolean;
   },
 ): Promise<ExtractionRunResult> {
   const checkpointId = row.id;
@@ -141,7 +160,43 @@ export async function runCheckpointExtraction(
     relatedProjectId: row.relatedProjectId,
   });
 
+  const counts = { skills: mapped.skills.length, opportunities: mapped.opportunities.length, cases: mapped.cases.length };
   await prisma.$transaction(async (tx) => {
+    if (options.preserveDecided) {
+      const [decidedOpps, decidedCases, decidedSkills] = await Promise.all([
+        tx.opportunity.findMany({
+          where: { sourceCheckpointId: checkpointId, status: { not: "PENDING" } },
+          select: { title: true },
+        }),
+        tx.case.findMany({
+          where: { sourceCheckpointId: checkpointId, status: { not: "PENDING" } },
+          select: { title: true },
+        }),
+        mapped.skills.length > 0
+          ? tx.skillSuggestion.findMany({
+              where: {
+                consultantId: row.consultantId,
+                weekStart,
+                suggestedName: { in: mapped.skills.map((s) => s.suggestedName) },
+                status: { not: "PENDING" },
+              },
+              select: { suggestedName: true },
+            })
+          : Promise.resolve([] as Array<{ suggestedName: string }>),
+      ]);
+      const opp = new Set(decidedOpps.map((o) => normalizeCardText(o.title)));
+      const cas = new Set(decidedCases.map((c) => normalizeCardText(c.title)));
+      const skl = new Set(decidedSkills.map((k) => k.suggestedName));
+      mapped.opportunities = mapped.opportunities.filter((o) => !opp.has(normalizeCardText(o.title)));
+      mapped.cases = mapped.cases.filter((c) => !cas.has(normalizeCardText(c.title)));
+      mapped.skills = mapped.skills.filter((k) => !skl.has(k.suggestedName));
+      // Sem duplicar dentro do próprio lote (mesmo título normalizado).
+      mapped.opportunities = uniqueByTitle(mapped.opportunities);
+      mapped.cases = uniqueByTitle(mapped.cases);
+    }
+    counts.skills = mapped.skills.length;
+    counts.opportunities = mapped.opportunities.length;
+    counts.cases = mapped.cases.length;
     // Idempotência: descarta candidatos PENDING aiGenerated DESTE checkpoint.
     await tx.opportunity.deleteMany({
       where: { sourceCheckpointId: checkpointId, aiGenerated: true, status: "PENDING" },
@@ -228,16 +283,7 @@ export async function runCheckpointExtraction(
     entityId: checkpointId,
     action: "CHECKPOINT_EXTRACTED",
     before: null,
-    after: {
-      skills: mapped.skills.length,
-      opportunities: mapped.opportunities.length,
-      cases: mapped.cases.length,
-    },
+    after: counts,
   });
-  return {
-    status: "done",
-    skills: mapped.skills.length,
-    opportunities: mapped.opportunities.length,
-    cases: mapped.cases.length,
-  };
+  return { status: "done", ...counts };
 }

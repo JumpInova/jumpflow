@@ -1,3 +1,4 @@
+import type { TranscriptStatus } from "../transcripts/schedule";
 import type { ActionItemInput } from "./generate";
 
 /**
@@ -24,6 +25,13 @@ export interface MinutesCheckpoint {
   eventEndAt: Date;
   eventCancelled: boolean;
   minutesStatus: EmailMinutesStatus | null;
+  /** M3: link Teams e organizador do evento (precedência da transcrição). */
+  eventJoinUrl?: string | null;
+  eventOrganizerEmail?: string | null;
+  /** M3: estado da transcrição do Teams deste checkpoint (null = nenhum). */
+  teamsStatus?: TranscriptStatus | null;
+  /** M3: lease do registro da transcrição (GENERATING vivo × órfão). */
+  teamsLeaseUntil?: Date | null;
 }
 
 export interface SaveMinutesInput {

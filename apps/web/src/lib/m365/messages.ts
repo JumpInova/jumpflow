@@ -17,6 +17,11 @@ export const M365_ERROR_MESSAGES = {
   mail_scope_missing:
     "A permissão de leitura de e-mail não foi concedida. A agenda continua conectada, mas as atas por e-mail ficam desligadas.",
   mail_not_allowed: "As atas por e-mail são só para quem registra checkpoints (gestores).",
+  teams_not_allowed: "As transcrições do Teams são só para quem registra checkpoints (gestores).",
+  teams_consent_denied:
+    "A Microsoft não liberou a leitura das transcrições do Teams. Essa permissão exige o consentimento de um administrador do tenant: peça ao administrador e tente de novo. Nada mudou na sua conexão.",
+  teams_scope_missing:
+    "A leitura das transcrições do Teams não foi concedida (normalmente falta o consentimento do administrador do tenant). A agenda e as demais funções continuam conectadas.",
 } as const;
 
 export type M365ErrorCode = keyof typeof M365_ERROR_MESSAGES;

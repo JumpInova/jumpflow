@@ -67,7 +67,12 @@ export default async function Microsoft365Page({ searchParams }: PageProps) {
             tone: "success",
             text: "Atas por e-mail ativadas. Depois de cada 1:1 ou checkpoint da agenda, a ata é procurada na sua caixa por até 7 dias.",
           }
-        : null;
+        : status === "transcricoes_ativadas"
+          ? {
+              tone: "success",
+              text: "Transcrições do Teams ativadas. Depois de cada 1:1 ou checkpoint do Teams que você organizar, a transcrição é procurada por até 48 horas.",
+            }
+          : null;
 
   const canSeeAdmin = await can(M365_ADMIN_CODE, "view");
 

@@ -3,9 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => {
   const created = { opportunities: [] as Record<string, unknown>[], cases: [] as Record<string, unknown>[], skills: [] as Record<string, unknown>[] };
   const tx = {
-    opportunity: { deleteMany: vi.fn(), create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => created.opportunities.push(data)) },
-    case: { deleteMany: vi.fn(), create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => created.cases.push(data)) },
-    skillSuggestion: { upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => created.skills.push(create)) },
+    opportunity: {
+      deleteMany: vi.fn(),
+      findMany: vi.fn(async () => [] as Array<{ title: string }>),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => created.opportunities.push(data)),
+    },
+    case: {
+      deleteMany: vi.fn(),
+      findMany: vi.fn(async () => [] as Array<{ title: string }>),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => created.cases.push(data)),
+    },
+    skillSuggestion: {
+      findMany: vi.fn(async () => [] as Array<{ suggestedName: string }>),
+      upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => created.skills.push(create)),
+    },
     checkpoint: { update: vi.fn() },
   };
   return {
@@ -76,5 +87,35 @@ describe("runCheckpointExtraction — máscara antes da IA, desmascara antes de 
     const [prompt] = ai.complete.mock.calls[0];
     expect(prompt).not.toContain("joao@cliente.com.br");
     expect(h.created.cases[0]).toMatchObject({ title: "Case com joao@cliente.com.br", sourceQuote: "falar com joao@cliente.com.br" });
+  });
+});
+
+describe("runCheckpointExtraction — preserveDecided (reextração automática / complemento do Teams)", () => {
+  it("não recria Oportunidade/Case já decididos nem reabre Skill decidida; dedup no lote", async () => {
+    h.prisma.opportunity.findMany.mockResolvedValueOnce([{ title: "Expandir o projeto!" }]);
+    h.prisma.case.findMany.mockResolvedValueOnce([{ title: "Case aceito" }]);
+    h.prisma.skillSuggestion.findMany.mockResolvedValueOnce([{ suggestedName: "Python" }]);
+    const ai = provider({
+      opportunities: [
+        { title: "expandir o projeto", description: "d" },
+        { title: "Nova oportunidade", description: "d" },
+        { title: "Nova  oportunidade.", description: "d" },
+      ],
+      cases: [{ title: "Case aceito", summary: "s" }, { title: "Case novo", summary: "s" }],
+      skills: [{ name: "Python" }, { name: "Go" }],
+    });
+    const result = await runCheckpointExtraction(row, { actorUserId: null, provider: ai, preserveDecided: true });
+    expect(result).toMatchObject({ status: "done", opportunities: 1, cases: 1, skills: 1 });
+    expect(h.created.opportunities.map((o) => o.title)).toEqual(["Nova oportunidade"]);
+    expect(h.created.cases.map((c) => c.title)).toEqual(["Case novo"]);
+    expect(h.created.skills.map((k) => k.suggestedName)).toEqual(["Go"]);
+    expect((h.prisma.opportunity.findMany.mock.calls[0] as unknown[])[0]).toMatchObject({ where: { sourceCheckpointId: "chk1", status: { not: "PENDING" } } });
+  });
+
+  it("sem a opção (Reprocessar manual da F4): comportamento original, sem consultar decididos", async () => {
+    h.prisma.opportunity.findMany.mockClear();
+    const ai = provider({ opportunities: [{ title: "A", description: "d" }] });
+    await runCheckpointExtraction(row, { actorUserId: null, provider: ai });
+    expect(h.prisma.opportunity.findMany).not.toHaveBeenCalled();
   });
 });

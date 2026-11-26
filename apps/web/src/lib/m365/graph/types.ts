@@ -101,3 +101,19 @@ export interface GraphAttachmentContent extends GraphAttachmentMeta {
   /** Bytes do anexo (decodificados do base64). Nunca persistidos. */
   bytes: Uint8Array;
 }
+
+// ── M3: reuniões online e transcrições do Teams (só leitura) ────────────────
+
+/** Reunião online do PRÓPRIO usuário (`/me/onlineMeetings`). */
+export interface GraphOnlineMeeting {
+  id: string;
+  joinWebUrl: string | null;
+  /** Id (Graph) do organizador, quando o Graph informa. Só em memória. */
+  organizerId: string | null;
+}
+
+/** Metadados de uma transcrição (sem conteúdo). */
+export interface GraphTranscriptMeta {
+  id: string;
+  createdDateTime: string | null;
+}

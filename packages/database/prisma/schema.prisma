@@ -2946,6 +2946,7 @@ enum NotificationEvent {
   SLA_OVERDUE // job de SLA: etapa com prazo vencido
   CHECKPOINT_MINUTES_READY // M365 (M2): ata do checkpoint gerada a partir do e-mail (so in-app, ao gestor)
   CHECKPOINT_MINUTES_CHOICE // M365 (M2): mais de um e-mail candidato; o gestor escolhe (so in-app)
+  CHECKPOINT_TRANSCRIPT_MISSING // M365 (M3): sem transcricao do Teams; colar notas ou aguardar a ata por e-mail (so in-app)
 }
 
 /// Nivel de agregacao em que a regra dispara.
@@ -3344,6 +3345,7 @@ model Checkpoint {
   actionItems         CheckpointActionItem[]
   /// Microsoft 365 (M2): estado da busca da ata por e-mail + metadados da origem.
   emailMinutes        CheckpointEmailMinutes?
+  teamsTranscript     CheckpointTeamsTranscript?
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
@@ -4053,4 +4055,61 @@ model CheckpointActionItem {
   updatedAt       DateTime                   @updatedAt
 
   @@index([checkpointId, status])
+}
+
+// ── Microsoft 365 (M3): transcrição do Teams → ata do Checkpoint ─────────────
+// O VTT bruto NUNCA e guardado (so em memoria durante a rodada). Guardado: a ata
+// (Checkpoint.notes), o texto-fonte MASCARADO (Checkpoint.transcription) e os
+// contadores abaixo. Nenhum campo guarda nome/fala de participante.
+
+/// Maquina de estados da transcricao do Teams de um Checkpoint.
+/// PENDING = aguardando a 1a consulta (10 min apos o fim); WAITING_TRANSCRIPT =
+/// sem transcricao ainda (backoff 15/30/60/120 min ate 6 h; 403 = 24 h);
+/// GENERATING = transcricao em memoria, gerando a ata (com lease); DONE = ata
+/// gravada/complementada; NO_TRANSCRIPT = nenhuma transcricao ate 6 h (gestor
+/// avisado); FAILED = acesso negado definitivo, transcricao grande demais,
+/// checkpoint mudou/ja tinha ata, reuniao nao organizada pelo gestor.
+enum CheckpointTranscriptStatus {
+  PENDING
+  WAITING_TRANSCRIPT
+  GENERATING
+  DONE
+  NO_TRANSCRIPT
+  FAILED
+}
+
+/// GENERATE = a transcricao gerou a ata (rascunho sem conteudo); SUPPLEMENT =
+/// complementou uma ata/notas existentes por acao do gestor.
+enum CheckpointTranscriptMode {
+  GENERATE
+  SUPPLEMENT
+}
+
+/// Transcricao do Teams de UM Checkpoint (1:1 com o Checkpoint). Claim atomico
+/// por `leaseOwner`/`leaseUntil` (updateMany condicional): varias instancias
+/// nunca processam o mesmo registro ao mesmo tempo.
+model CheckpointTeamsTranscript {
+  id              String                     @id @default(cuid())
+  checkpointId    String                     @unique
+  checkpoint      Checkpoint                 @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  status          CheckpointTranscriptStatus @default(PENDING)
+  mode            CheckpointTranscriptMode?
+  attempts        Int                        @default(0)
+  nextAttemptAt   DateTime?
+  lastCheckedAt   DateTime?
+  /// Codigo curto e seguro (sem conteudo pessoal), ex.: access_denied.
+  lastError       String?
+  /// Instante do ultimo 403: nenhuma consulta (job OU botao) por 24 h a partir
+  /// dele, qualquer que seja o status.
+  accessDeniedAt  DateTime?
+  leaseOwner      String?
+  leaseUntil      DateTime?
+  transcriptsUsed Int                        @default(0)
+  truncated       Boolean                    @default(false)
+  aiSummary       Boolean                    @default(false)
+  completedAt     DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([status, nextAttemptAt])
 }

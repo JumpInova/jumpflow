@@ -12,7 +12,13 @@ import {
   type FetchLike,
   type TokenSet,
 } from "./oauth";
-import { PHASE_SCOPES, consentedPhase, phaseGrantedScopes, type M365Phase } from "./scopes";
+import {
+  consentedCapabilities,
+  phaseGrantedScopes,
+  refreshFallbacks,
+  scopesForCapabilities,
+  type ScopeProfile,
+} from "./scopes";
 import {
   ConnectionChangedError,
   type ConnectionWriteGuard,
@@ -39,7 +45,7 @@ export function encryptRefreshToken(token: string): string {
 export function encryptTokenSet(
   tokens: TokenSet,
   previousRefreshEncrypted: string | null,
-  phase: M365Phase = "M1",
+  phase: ScopeProfile = "M1",
 ): {
   accessTokenEncrypted: string;
   refreshTokenEncrypted: string;
@@ -70,7 +76,7 @@ export function needsRefresh(
 }
 
 const CONFIG_CODES = new Set(["invalid_client", "unauthorized_client", "invalid_request"]);
-/** Falhas do refresh M2 que indicam só o escopo de e-mail retirado. */
+/** Falhas do refresh que indicam parte do consentimento retirado (e-mail/Teams). */
 const DOWNGRADE_CODES = new Set(["consent_required", "invalid_scope"]);
 
 export interface TokenProviderDeps {
@@ -110,31 +116,27 @@ export function createTokenProvider(deps: TokenProviderDeps): AccessTokenProvide
       await deps.store.setStatus(conn.id, "REAUTH_REQUIRED", "token_decrypt_failed", guard);
       throw new GraphError("reauth", "Refresh token ilegível.", { code: "token_decrypt_failed" });
     }
-    // Fase EFETIVAMENTE consentida (M1, ou M2 se `Mail.Read` foi concedido):
-    // pede exatamente os escopos dela (com offline_access), nunca além — nem
-    // escopo de fase futura mesmo se consentido fora do app.
-    let phase: M365Phase = consentedPhase(conn.scopes);
-    let tokens: TokenSet;
+    // Capacidades EFETIVAMENTE consentidas (base + e-mail? + Teams?): pede
+    // exatamente os escopos delas (com offline_access), nunca além — nem
+    // escopo consentido fora do app.
+    const attempts = refreshFallbacks(consentedCapabilities(conn.scopes));
+    let caps = attempts[0];
+    let tokens!: TokenSet;
     try {
-      try {
-        tokens = await refreshAccessToken(
-          { credentials: deps.credentials, fetch: deps.fetch, now },
-          { refreshToken, scopes: PHASE_SCOPES[phase] },
-        );
-      } catch (error) {
-        // `Mail.Read` revogado (consentimento retirado só do e-mail): recua UMA
-        // vez para a M1 — a agenda continua; `scopes` grava só o concedido.
-        if (
-          phase === "M2" &&
-          error instanceof OAuthTokenError &&
-          DOWNGRADE_CODES.has(error.code)
-        ) {
-          phase = "M1";
+      for (let i = 0; i < attempts.length; i += 1) {
+        caps = attempts[i];
+        try {
           tokens = await refreshAccessToken(
             { credentials: deps.credentials, fetch: deps.fetch, now },
-            { refreshToken, scopes: PHASE_SCOPES.M1 },
+            { refreshToken, scopes: scopesForCapabilities(caps) },
           );
-        } else {
+          break;
+        } catch (error) {
+          // Consentimento retirado de PARTE (e-mail e/ou Teams): recua para o
+          // próximo conjunto menor — a agenda continua; `scopes` grava só o
+          // concedido. Cada conjunto é tentado no máximo uma vez.
+          const last = i === attempts.length - 1;
+          if (!last && error instanceof OAuthTokenError && DOWNGRADE_CODES.has(error.code)) continue;
           throw error;
         }
       }
@@ -151,8 +153,8 @@ export function createTokenProvider(deps: TokenProviderDeps): AccessTokenProvide
       }
       throw error;
     }
-    const encrypted = encryptTokenSet(tokens, conn.refreshTokenEncrypted, phase);
-    if (encrypted.scopes.length === 0) encrypted.scopes = phaseGrantedScopes(conn.scopes, phase);
+    const encrypted = encryptTokenSet(tokens, conn.refreshTokenEncrypted, caps);
+    if (encrypted.scopes.length === 0) encrypted.scopes = phaseGrantedScopes(conn.scopes, caps);
     // Desconectado/pausado/lease perdido no meio da rodada: não grava (nunca
     // ressuscita tokens) e encerra a rodada.
     if (!(await deps.store.saveTokens(conn.id, encrypted, guard))) {

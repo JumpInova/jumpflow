@@ -7,7 +7,9 @@ import type {
   GraphMe,
   GraphMessage,
   GraphMessageBody,
+  GraphOnlineMeeting,
 } from "./types";
+import { CONTENT_TOO_LARGE, TRANSCRIPT_MAX_BYTES } from "./client";
 
 /**
  * Fake em memória do {@link GraphClient} para testes (nenhuma chamada real).
@@ -32,16 +34,25 @@ export interface FakeMessage extends GraphMessage {
   attachments?: Array<Omit<GraphAttachmentContent, "kind"> & { kind?: GraphAttachmentContent["kind"] }>;
 }
 
+/** M3: reunião online do usuário do fake, com transcrições (VTT em memória). */
+export interface FakeOnlineMeeting extends GraphOnlineMeeting {
+  transcripts?: Array<{ id: string; createdDateTime?: string | null; content: string }>;
+}
+
 export interface FakeGraph extends GraphClient {
   upsertEvent(event: GraphEvent): void;
   removeEvent(id: string): void;
   expireDeltaLinks(): void;
   failNext(error: GraphError): void;
   addMessage(message: FakeMessage): void;
+  addOnlineMeeting(meeting: FakeOnlineMeeting): void;
+  /** Adiciona uma transcrição a uma reunião já cadastrada (fica pronta "depois"). */
+  addTranscript(meetingId: string, transcript: { id: string; createdDateTime?: string | null; content: string }): void;
   calls: {
     me: number;
     delta: Array<"initial" | "link">;
     mail: Array<{ op: "find" | "get" | "body" | "attachments" | "attachment"; kind?: MessageQuery["kind"]; id?: string }>;
+    teams: Array<{ op: "meeting" | "transcripts" | "content"; joinUrl?: string; id?: string }>;
   };
 }
 
@@ -79,7 +90,8 @@ export function createFakeGraphClient(options: {
   let seq = 0;
   let generation = 0;
   const pending: GraphError[] = [];
-  const calls: FakeGraph["calls"] = { me: 0, delta: [], mail: [] };
+  const calls: FakeGraph["calls"] = { me: 0, delta: [], mail: [], teams: [] };
+  const meetings = new Map<string, FakeOnlineMeeting>();
   const messages = new Map<string, FakeMessage>();
   function messageOrThrow(id: string): FakeMessage {
     const m = messages.get(id);
@@ -147,6 +159,37 @@ export function createFakeGraphClient(options: {
     },
     addMessage(message) {
       messages.set(message.id, message);
+    },
+    addOnlineMeeting(meeting) {
+      meetings.set(meeting.id, { ...meeting, transcripts: [...(meeting.transcripts ?? [])] });
+    },
+    addTranscript(meetingId, transcript) {
+      const m = meetings.get(meetingId);
+      if (m) m.transcripts = [...(m.transcripts ?? []), transcript];
+    },
+    async findOnlineMeetingByJoinUrl(joinUrl) {
+      throwPending();
+      calls.teams.push({ op: "meeting", joinUrl });
+      // Como o Graph: comparação exata do link (só reuniões do próprio usuário).
+      const found = [...meetings.values()].find((m) => m.joinWebUrl === joinUrl);
+      return found ? { id: found.id, joinWebUrl: found.joinWebUrl, organizerId: found.organizerId } : null;
+    },
+    async listTranscripts(meetingId) {
+      throwPending();
+      calls.teams.push({ op: "transcripts", id: meetingId });
+      const m = meetings.get(meetingId);
+      if (!m) throw new GraphError("not_found", "Graph respondeu 404.", { status: 404 });
+      return (m.transcripts ?? []).map((t) => ({ id: t.id, createdDateTime: t.createdDateTime ?? null }));
+    },
+    async getTranscriptContent(meetingId, transcriptId, maxBytes = TRANSCRIPT_MAX_BYTES) {
+      throwPending();
+      calls.teams.push({ op: "content", id: transcriptId });
+      const t = meetings.get(meetingId)?.transcripts?.find((x) => x.id === transcriptId);
+      if (!t) throw new GraphError("not_found", "Graph respondeu 404.", { status: 404 });
+      if (Buffer.byteLength(t.content, "utf8") > maxBytes) {
+        throw new GraphError("http", "Conteúdo acima do teto.", { status: 200, code: CONTENT_TOO_LARGE });
+      }
+      return t.content;
     },
     async findMessages(query) {
       throwPending();

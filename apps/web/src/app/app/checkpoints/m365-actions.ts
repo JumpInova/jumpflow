@@ -6,6 +6,7 @@ import type { ActionResult } from "@/lib/actions/result";
 import { canTransitionActionItem, type ActionItemStatus } from "@/lib/checkpoint/action-items";
 import { canManageCheckpoint } from "@/lib/checkpoint/visibility";
 import type { ManualResult, MinutesChoiceView, ProcessOutcome } from "@/lib/m365/minutes/run";
+import type { TranscriptManualResult, TranscriptOutcome } from "@/lib/m365/transcripts/run";
 import { m365RuntimeGate } from "@/lib/m365/runtime";
 
 /**
@@ -13,6 +14,9 @@ import { m365RuntimeGate } from "@/lib/m365/runtime";
  * - "Buscar ata no e-mail" e a escolha do e-mail em caso de empate: SÓ o gestor
  *   do checkpoint, e só na PRÓPRIA caixa (nem ADMIN/PEOPLE leem a caixa de
  *   outra pessoa). As candidatas vêm ao vivo e não são persistidas.
+ * - "Buscar/Complementar com a transcrição do Teams" (M3): SÓ o gestor do
+ *   checkpoint, na PRÓPRIA conta, para reunião que ele organizou. Sem ata, gera;
+ *   com ata/notas, só complementa (nunca sobrescreve).
  * - Validação dos cards de Ação: autor/PEOPLE/ADMIN (mesma porta de gestão do
  *   checkpoint), com o checkpoint dentro do escopo de leitura.
  * Com `M365_INTEGRATION_ENABLED` desligada, tudo fica inerte.
@@ -132,6 +136,52 @@ export async function chooseCheckpointMinutesEmail(input: {
   if (!result.ok) return manualError(result);
   revalidatePath(CHECKPOINT_PATH);
   return { ok: true, data: { outcome: result.value, message: OUTCOME_MESSAGES[result.value] } };
+}
+
+const TRANSCRIPT_MANUAL_MESSAGES: Record<Exclude<TranscriptManualResult, { ok: true }>["code"], string> = {
+  not_found: "Checkpoint não encontrado.",
+  forbidden: "Só o gestor que registra este checkpoint pode buscar a transcrição na própria conta.",
+  not_eligible:
+    "Este checkpoint não pode receber a transcrição (reunião sem Teams, cancelada, não organizada por você ou encerrada há mais de 48 h).",
+  too_early: "A transcrição fica disponível alguns minutos depois do fim da reunião. Tente de novo em instantes.",
+  not_connected: "Ative as transcrições do Teams em Minha conta › Microsoft 365.",
+  busy: "Uma sincronização da sua conta já está em andamento. Tente de novo em instantes.",
+  unavailable: "Não foi possível consultar o Teams agora. Tente de novo em instantes.",
+  reauth: "A Microsoft pediu uma nova autorização. Reconecte sua conta em Minha conta › Microsoft 365.",
+};
+
+const TRANSCRIPT_OUTCOME_MESSAGES: Record<TranscriptOutcome, string> = {
+  saved: "Ata gerada a partir da transcrição do Teams. Revise as notas, as ações e os insights.",
+  saved_without_ai: "Transcrição importada, mas a IA não estava disponível: o texto (mascarado) está na transcrição.",
+  waiting: "A transcrição ainda não está pronta. A busca continua automaticamente.",
+  no_transcript: "Não há transcrição desta reunião no Teams. Cole suas notas ou aguarde a ata por e-mail.",
+  access_denied: "A Microsoft negou o acesso à transcrição desta reunião.",
+  too_large: "A transcrição é grande demais para ser lida.",
+  failed: "Não foi possível ler a transcrição agora. Tente de novo mais tarde.",
+  checkpoint_changed: "O checkpoint mudou enquanto a ata era gerada. Nada foi sobrescrito.",
+  record_busy: "A transcrição deste checkpoint já está sendo processada. Tente de novo em instantes.",
+  not_eligible: "Este checkpoint não pode receber a transcrição.",
+  already_done: "A transcrição do Teams já foi usada neste checkpoint.",
+};
+
+/** "Buscar transcrição do Teams" / "Complementar com a transcrição do Teams". */
+export async function fetchCheckpointTeamsTranscript(
+  checkpointId: string,
+): Promise<ActionResult<{ outcome: TranscriptOutcome; message: string }>> {
+  const blocked = gateFailure();
+  if (blocked) return blocked;
+  const parsed = idSchema.safeParse(checkpointId);
+  if (!parsed.success) return { ok: false, error: "INVALID_INPUT", message: "Checkpoint inválido." };
+  const actor = await actorUserId();
+  if (!actor) return { ok: false, error: "FORBIDDEN", message: TRANSCRIPT_MANUAL_MESSAGES.forbidden };
+  const { fetchCheckpointTranscriptNow } = await import("@/lib/m365/runtime");
+  const result = await fetchCheckpointTranscriptNow(parsed.data, actor);
+  if (!result.ok) {
+    const error = result.code === "not_found" ? "NOT_FOUND" : result.code === "forbidden" ? "FORBIDDEN" : "NOT_EDITABLE";
+    return { ok: false, error, message: TRANSCRIPT_MANUAL_MESSAGES[result.code] };
+  }
+  revalidatePath(CHECKPOINT_PATH);
+  return { ok: true, data: { outcome: result.value, message: TRANSCRIPT_OUTCOME_MESSAGES[result.value] } };
 }
 
 /**

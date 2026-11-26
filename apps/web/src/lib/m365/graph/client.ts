@@ -1,3 +1,4 @@
+import { ALLOWED_TEAMS_JOIN_HOSTS } from "../config";
 import type { FetchLike } from "../oauth";
 import { GraphError, kindForStatus } from "./errors";
 import type {
@@ -8,6 +9,8 @@ import type {
   GraphMe,
   GraphMessage,
   GraphMessageBody,
+  GraphOnlineMeeting,
+  GraphTranscriptMeta,
 } from "./types";
 
 /**
@@ -53,6 +56,18 @@ export interface GraphClient {
   getMessageBody(messageId: string): Promise<GraphMessageBody>;
   listAttachments(messageId: string): Promise<GraphAttachmentMeta[]>;
   getAttachment(messageId: string, attachmentId: string): Promise<GraphAttachmentContent>;
+  /**
+   * M3: reunião online do PRÓPRIO usuário pelo link de entrada
+   * (`/me/onlineMeetings?$filter=JoinWebUrl eq '…'`). null = nenhuma.
+   */
+  findOnlineMeetingByJoinUrl(joinUrl: string): Promise<GraphOnlineMeeting | null>;
+  /** M3: transcrições da reunião (só metadados). */
+  listTranscripts(meetingId: string): Promise<GraphTranscriptMeta[]>;
+  /**
+   * M3: conteúdo WebVTT de UMA transcrição, só em memória, com teto de bytes
+   * (acima dele: GraphError `http`/`content_too_large`, sem guardar o resto).
+   */
+  getTranscriptContent(meetingId: string, transcriptId: string, maxBytes?: number): Promise<string>;
 }
 
 /** Campos lidos de uma mensagem na busca (nunca body/bodyPreview). */
@@ -72,6 +87,94 @@ export const MESSAGE_BODY_MAX_CHARS = 512 * 1024;
 export function pathSegment(id: string): string {
   const encoded = encodeURIComponent(id);
   return /^\.{1,2}$/.test(id) ? encoded.replace(/\./g, "%252E") : encoded;
+}
+
+/** Teto padrão do VTT de uma transcrição (bytes). */
+export const TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024;
+/** Teto de transcrições lidas por reunião. */
+export const TRANSCRIPT_LIST_LIMIT = 5;
+/** Teto do link de entrada aceito no filtro. */
+export const JOIN_URL_MAX_CHARS = 2048;
+export const CONTENT_TOO_LARGE = "content_too_large";
+
+/**
+ * URL de `GET /me/onlineMeetings` filtrando pelo link de entrada.
+ *
+ * Encoding (pendência de validação real no Azure): o link é usado COMO VEIO da
+ * agenda (já com `%3a`, `%40`…), as aspas simples são dobradas (literal OData) e
+ * o `$filter` inteiro é codificado UMA vez com `encodeURIComponent` — então
+ * `%3a` vira `%253a`, espaço vira `%20` (nunca `+`) e `'` fica literal, como no
+ * exemplo da documentação do Graph. Link fora do formato → null (não chama).
+ */
+export function onlineMeetingFilterUrl(joinUrl: string): string | null {
+  const raw = String(joinUrl ?? "");
+  if (!raw || raw.length > JOIN_URL_MAX_CHARS) return null;
+  for (let i = 0; i < raw.length; i += 1) {
+    const c = raw.charCodeAt(i);
+    if (c <= 0x20 || c === 0x7f) return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  // Defesa em profundidade: o mesmo allowlist de hosts do Teams da agenda.
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+  if (!ALLOWED_TEAMS_JOIN_HOSTS.includes(parsed.hostname.toLowerCase())) return null;
+  const filter = `JoinWebUrl eq ${odataString(raw)}`;
+  return `${GRAPH_BASE_URL}/me/onlineMeetings?$filter=${encodeURIComponent(filter)}&$select=id,joinWebUrl,participants`;
+}
+
+function mapOnlineMeeting(m: Record<string, unknown> | null | undefined): GraphOnlineMeeting | null {
+  if (!m || typeof m.id !== "string" || !m.id) return null;
+  const participants = m.participants as { organizer?: { identity?: { user?: { id?: unknown } } } } | undefined;
+  const organizerId = participants?.organizer?.identity?.user?.id;
+  return {
+    id: m.id,
+    joinWebUrl: typeof m.joinWebUrl === "string" ? m.joinWebUrl : null,
+    organizerId: typeof organizerId === "string" && organizerId ? organizerId : null,
+  };
+}
+
+/**
+ * Lê o corpo como texto UTF-8 com teto de bytes: recusa pelo `content-length`
+ * ou cancela o stream assim que passar (nunca guarda o corpo inteiro).
+ */
+export async function readTextCapped(res: Response, maxBytes: number): Promise<string> {
+  const tooLarge = () => new GraphError("http", "Conteúdo acima do teto.", { status: res.status, code: CONTENT_TOO_LARGE });
+  const len = Number(res.headers.get("content-length"));
+  if (Number.isFinite(len) && len > maxBytes) {
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* já fechado */
+    }
+    throw tooLarge();
+  }
+  if (!res.body) {
+    const text = await res.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) throw tooLarge();
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* já fechado */
+      }
+      throw tooLarge();
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** Escapa aspas simples para literal OData. */
@@ -202,7 +305,7 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
     return options.deadline === undefined ? Number.POSITIVE_INFINITY : options.deadline - now();
   }
 
-  async function once(url: string, token: string, extraPrefer?: string): Promise<Response> {
+  async function once(url: string, token: string, extraPrefer?: string, accept?: string): Promise<Response> {
     const budget = remaining();
     if (budget <= 0) {
       throw new GraphError("http", "Prazo da rodada esgotado.", { cause: "deadline" });
@@ -215,7 +318,7 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: "application/json",
+          Accept: accept ?? "application/json",
           Prefer: `outlook.timezone="UTC", odata.maxpagesize=${pageSize}${extraPrefer ? `, ${extraPrefer}` : ""}`,
         },
         signal: controller.signal,
@@ -247,22 +350,14 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
     });
   }
 
-  async function getJson<T>(url: string, extraPrefer?: string): Promise<T> {
+  /** GET com 401 → refresh único e retry de throttling; devolve a resposta OK. */
+  async function getOk(url: string, extraPrefer?: string, accept?: string): Promise<Response> {
     let token = await options.tokens.get();
     let refreshed = false;
     let attempt = 0;
     for (;;) {
-      const res = await once(url, token, extraPrefer);
-      if (res.ok) {
-        try {
-          return (await res.json()) as T;
-        } catch {
-          throw new GraphError("http", "Resposta do Graph ilegível.", {
-            status: res.status,
-            code: "invalid_json",
-          });
-        }
-      }
+      const res = await once(url, token, extraPrefer, accept);
+      if (res.ok) return res;
       const error = await errorFrom(res);
       if (res.status === 401 && !refreshed) {
         refreshed = true;
@@ -284,6 +379,18 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
         continue;
       }
       throw error;
+    }
+  }
+
+  async function getJson<T>(url: string, extraPrefer?: string): Promise<T> {
+    const res = await getOk(url, extraPrefer);
+    try {
+      return (await res.json()) as T;
+    } catch {
+      throw new GraphError("http", "Resposta do Graph ilegível.", {
+        status: res.status,
+        code: "invalid_json",
+      });
     }
   }
 
@@ -363,6 +470,41 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
       const meta = mapAttachmentMeta(json);
       const b64 = typeof json?.contentBytes === "string" ? json.contentBytes : "";
       return { ...meta, bytes: new Uint8Array(Buffer.from(b64, "base64")) };
+    },
+
+    async findOnlineMeetingByJoinUrl(joinUrl) {
+      const url = onlineMeetingFilterUrl(joinUrl);
+      if (!url) return null;
+      const json = await getJson<{ value?: Record<string, unknown>[] }>(url);
+      const value = Array.isArray(json.value) ? json.value : [];
+      // Mais de uma reunião com o mesmo link não é esperado: só a 1ª válida.
+      for (const item of value) {
+        const meeting = mapOnlineMeeting(item);
+        if (meeting) return meeting;
+      }
+      return null;
+    },
+
+    async listTranscripts(meetingId) {
+      const json = await getJson<{ value?: Record<string, unknown>[] }>(
+        `${GRAPH_BASE_URL}/me/onlineMeetings/${pathSegment(meetingId)}/transcripts`,
+      );
+      const value = Array.isArray(json.value) ? json.value : [];
+      return value
+        .filter((t) => typeof t?.id === "string" && t.id)
+        .map((t) => ({
+          id: t.id as string,
+          createdDateTime: typeof t.createdDateTime === "string" ? t.createdDateTime : null,
+        }));
+    },
+
+    async getTranscriptContent(meetingId, transcriptId, maxBytes = TRANSCRIPT_MAX_BYTES) {
+      const res = await getOk(
+        `${GRAPH_BASE_URL}/me/onlineMeetings/${pathSegment(meetingId)}/transcripts/${pathSegment(transcriptId)}/content?$format=text/vtt`,
+        undefined,
+        "text/vtt",
+      );
+      return readTextCapped(res, maxBytes);
     },
   };
 }

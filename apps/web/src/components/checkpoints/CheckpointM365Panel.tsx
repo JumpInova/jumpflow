@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, CheckCheck, ExternalLink, Loader2, Mail, MailSearch, X } from "lucide-react";
+import { Check, CheckCheck, ExternalLink, Loader2, Mail, MailSearch, Video, X } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import type { FeedbackTone } from "@/components/ui/Feedback";
@@ -9,7 +9,10 @@ import {
   actionItemStatusLabels,
   canTransitionActionItem,
   emailMinutesStatusLabels,
+  teamsTranscriptErrorLabel,
+  teamsTranscriptStatusLabels,
   type ActionItemStatus,
+  type TeamsTranscriptStatusView,
   type CheckpointActionItemView,
   type CheckpointM365View,
 } from "@/lib/checkpoint/action-items";
@@ -17,6 +20,7 @@ import type { MinutesChoiceView } from "@/lib/m365/minutes/run";
 import {
   chooseCheckpointMinutesEmail,
   decideCheckpointActionItem,
+  fetchCheckpointTeamsTranscript,
   listCheckpointMinutesCandidates,
   searchCheckpointMinutes,
 } from "@/app/app/checkpoints/m365-actions";
@@ -33,6 +37,15 @@ const MINUTES_TONE: Record<NonNullable<CheckpointM365View["minutes"]>["status"],
   SEARCHING: "neutral",
   AMBIGUOUS: "warning",
   DONE: "success",
+  FAILED: "danger",
+};
+
+const TEAMS_TONE: Record<TeamsTranscriptStatusView, StatusTone> = {
+  PENDING: "neutral",
+  WAITING_TRANSCRIPT: "neutral",
+  GENERATING: "info",
+  DONE: "success",
+  NO_TRANSCRIPT: "warning",
   FAILED: "danger",
 };
 
@@ -83,6 +96,17 @@ export function CheckpointM365Panel({ checkpointId, view, canManage, notify }: C
     });
   }
 
+  function fetchTranscript() {
+    startTransition(async () => {
+      const result = await fetchCheckpointTeamsTranscript(checkpointId);
+      if (!result.ok) {
+        notify("warning", result.message);
+        return;
+      }
+      notify(result.data.outcome.startsWith("saved") ? "success" : "info", result.data.message);
+    });
+  }
+
   function loadChoices() {
     startTransition(async () => {
       const result = await listCheckpointMinutesCandidates(checkpointId);
@@ -121,8 +145,53 @@ export function CheckpointM365Panel({ checkpointId, view, canManage, notify }: C
     });
   }
 
+  const teams = view.teams ?? null;
+  const teamsError = teams ? teamsTranscriptErrorLabel(teams.lastError) : null;
+
   return (
     <div className="space-y-4" data-testid="checkpoint-m365">
+      {teams ? (
+        <section aria-label="Transcrição do Teams" className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-2 text-sm font-semibold text-strong">
+              <Video aria-hidden="true" className="size-4" />
+              Transcrição do Teams
+            </span>
+            <StatusBadge tone={teams.status ? TEAMS_TONE[teams.status] : "neutral"}>
+              {teams.status ? teamsTranscriptStatusLabels[teams.status] : "Não consultada"}
+            </StatusBadge>
+            {teams.action ? (
+              <ActionButton
+                variant="secondary"
+                size="sm"
+                icon={pending ? Loader2 : Video}
+                disabled={pending}
+                onClick={fetchTranscript}
+                className="ml-auto"
+              >
+                {teams.action === "generate" ? "Buscar transcrição do Teams" : "Complementar com a transcrição do Teams"}
+              </ActionButton>
+            ) : null}
+          </div>
+          {teams.status === "DONE" ? (
+            <p className="text-xs text-soft">
+              {teams.mode === "SUPPLEMENT" ? "Complementou a ata existente" : "Gerou a ata deste checkpoint"}
+              {teams.aiSummary ? " · resumida pela IA" : " · sem resumo da IA"}
+              {teams.truncated ? " · reunião longa, resumida parcialmente" : ""}
+            </p>
+          ) : (
+            <p className="text-xs text-soft">
+              {teamsError ??
+                (teams.action === "supplement"
+                  ? "Este checkpoint já tem ata ou notas. A transcrição só entra se você pedir, como complemento — nada é sobrescrito."
+                  : view.isOwnManager
+                    ? "Para reuniões do Teams que você organizou, a transcrição é lida na sua conta (até 48 h após o fim), mascarada antes da IA e não é guardada em bruto."
+                    : "A transcrição é lida só na conta do gestor que organizou a reunião.")}
+            </p>
+          )}
+        </section>
+      ) : null}
+
       {showMinutes ? (
         <section aria-label="Ata por e-mail" className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">

@@ -25,6 +25,8 @@ export interface M365ConnectionRecord {
   expiresAt: Date | null;
   scopes: string[];
   mailbox: string | null;
+  /** Id do usuário no Graph (conferido em /me no callback). */
+  graphUserId?: string | null;
   calendarDeltaLink: string | null;
   calendarWindowStart: Date | null;
   calendarWindowEnd: Date | null;

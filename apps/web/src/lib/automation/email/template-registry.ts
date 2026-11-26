@@ -67,6 +67,7 @@ export const NOTIFICATION_EVENTS = [
   "SLA_OVERDUE",
   "CHECKPOINT_MINUTES_READY",
   "CHECKPOINT_MINUTES_CHOICE",
+  "CHECKPOINT_TRANSCRIPT_MISSING",
 ] as const;
 
 export type NotificationEventName = (typeof NOTIFICATION_EVENTS)[number];
@@ -993,6 +994,16 @@ const DEFINITIONS: Record<NotificationEventName, TemplateDefinition> = {
     audience: "Gestor que registra o checkpoint",
     sendsEmail: false,
     reason: "Aviso só no sino (in-app): a escolha acontece na tela do checkpoint.",
+  },
+  CHECKPOINT_TRANSCRIPT_MISSING: {
+    event: "CHECKPOINT_TRANSCRIPT_MISSING",
+    label: "Sem transcrição do Teams (Microsoft 365)",
+    group: "Pessoas",
+    description:
+      "A transcrição do Teams de um 1:1/checkpoint não ficou disponível: o gestor cola as notas ou aguarda a ata por e-mail.",
+    audience: "Gestor que registra o checkpoint",
+    sendsEmail: false,
+    reason: "Aviso só no sino (in-app): o conteúdo do 1:1 é sensível e não sai por e-mail.",
   },
 };
 

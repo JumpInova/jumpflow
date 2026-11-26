@@ -8,6 +8,7 @@ const searchCheckpointMinutes = vi.fn();
 const listCheckpointMinutesCandidates = vi.fn();
 const chooseCheckpointMinutesEmail = vi.fn();
 const decideCheckpointActionItem = vi.fn();
+const fetchCheckpointTeamsTranscript = vi.fn();
 
 vi.mock("@/app/app/checkpoints/actions", () => ({
   setVisibility: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/app/app/checkpoints/m365-actions", () => ({
   listCheckpointMinutesCandidates: (...a: unknown[]) => listCheckpointMinutesCandidates(...a),
   chooseCheckpointMinutesEmail: (...a: unknown[]) => chooseCheckpointMinutesEmail(...a),
   decideCheckpointActionItem: (...a: unknown[]) => decideCheckpointActionItem(...a),
+  fetchCheckpointTeamsTranscript: (...a: unknown[]) => fetchCheckpointTeamsTranscript(...a),
 }));
 
 afterEach(() => {
@@ -154,5 +156,59 @@ describe("CheckpointCard + painel Microsoft 365", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Usar este e-mail/ }));
     await waitFor(() => expect(chooseCheckpointMinutesEmail).toHaveBeenCalledWith({ checkpointId: "cp1", messageId: "m2" }));
+  });
+});
+
+describe("Transcrição do Teams (M3) no painel", () => {
+  const teams = (over: Partial<NonNullable<CheckpointM365View["teams"]>> = {}): NonNullable<CheckpointM365View["teams"]> => ({
+    status: null,
+    mode: null,
+    lastError: null,
+    aiSummary: false,
+    truncated: false,
+    lastCheckedAt: null,
+    nextAttemptAt: null,
+    action: "generate",
+    ...over,
+  });
+  const renderWith = (m365: CheckpointM365View, notify = vi.fn()) =>
+    render(
+      <ul>
+        <CheckpointCard item={item()} insights={{ opportunities: [], cases: [] }} flags={flags} notify={notify} m365={m365} />
+      </ul>,
+    );
+
+  it("gestor organizador: 'Buscar transcrição do Teams' chama a action do checkpoint", async () => {
+    fetchCheckpointTeamsTranscript.mockResolvedValueOnce({ ok: true, data: { outcome: "waiting", message: "Ainda não." } });
+    const notify = vi.fn();
+    renderWith(view({ teams: teams() }), notify);
+    fireEvent.click(screen.getByRole("button", { name: "Buscar transcrição do Teams" }));
+    await waitFor(() => expect(fetchCheckpointTeamsTranscript).toHaveBeenCalledWith("cp1"));
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("info", "Ainda não."));
+  });
+
+  it("com ata existente o botão é de COMPLEMENTO e explica que nada é sobrescrito", () => {
+    renderWith(view({ teams: teams({ action: "supplement" }) }));
+    expect(screen.getByRole("button", { name: "Complementar com a transcrição do Teams" })).toBeTruthy();
+    expect(screen.getByText(/nada é sobrescrito/)).toBeTruthy();
+  });
+
+  it("sem ação (não é o gestor / não organizou): só o estado, sem botão", () => {
+    renderWith(view({ isOwnManager: false, teams: teams({ action: null, status: "NO_TRANSCRIPT" }) }));
+    expect(screen.queryByRole("button", { name: /transcrição do Teams/ })).toBeNull();
+    expect(screen.getByText("Sem transcrição")).toBeTruthy();
+  });
+
+  it("403 mostra o motivo sem detalhe técnico; DONE mostra o modo", () => {
+    renderWith(view({ teams: teams({ action: null, status: "WAITING_TRANSCRIPT", lastError: "access_denied" }) }));
+    expect(screen.getByText(/negou o acesso/)).toBeTruthy();
+    cleanup();
+    renderWith(view({ teams: teams({ action: null, status: "DONE", mode: "SUPPLEMENT", aiSummary: true }) }));
+    expect(screen.getByText(/Complementou a ata existente/)).toBeTruthy();
+  });
+
+  it("reunião sem Teams: a seção não aparece", () => {
+    renderWith(view({ teams: null }));
+    expect(screen.queryByLabelText("Transcrição do Teams")).toBeNull();
   });
 });

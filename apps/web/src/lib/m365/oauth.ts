@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { M365Credentials } from "./config";
 import { isForbiddenTenant } from "./config";
-import { assertScopesForPhase, splitScopes, type M365Phase } from "./scopes";
+import { assertScopesForPhase, splitScopes, type M365Capability, type M365Phase, type ScopeProfile } from "./scopes";
 
 /**
  * Microsoft 365 — OAuth 2.0 authorization code + PKCE (S256), delegado.
@@ -124,8 +124,10 @@ export interface OAuthCookiePayload {
   verifier: string;
   userId: string;
   exp: number;
-  /** Fase pedida no início (M1 = agenda; M2 = + atas por e-mail). */
+  /** Fase pedida no início (M1 = agenda; M2 = + atas por e-mail; M3 = + Teams). */
   phase?: M365Phase;
+  /** Conjunto exato de capacidades pedido (base + estas). */
+  caps?: M365Capability[];
 }
 
 // ── authorize URL ────────────────────────────────────────────────────────────
@@ -135,7 +137,8 @@ export interface AuthorizeUrlInput {
   redirectUri: string;
   /** Escopos pedidos (array e/ou string separada por espaço). */
   scopes: string | readonly string[];
-  phase: M365Phase;
+  /** Rótulo de fase (teto) ou conjunto EXATO de capacidades pedido. */
+  phase: ScopeProfile;
   state: string;
   codeChallenge: string;
   loginHint?: string;

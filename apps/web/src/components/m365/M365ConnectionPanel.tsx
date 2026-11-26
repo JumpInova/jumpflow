@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, Link2, Mail, Pause, Play, RefreshCw, Unplug } from "lucide-react";
+import { CalendarCheck, Link2, Mail, Pause, Play, RefreshCw, Unplug, Video } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { FeedbackBanner, useFeedback, type FeedbackTone } from "@/components/ui/Feedback";
 import { SectionPanel } from "@/components/ui/SectionPanel";
@@ -32,6 +32,8 @@ const SCOPE_LABEL: Record<string, string> = {
   "user.read": "Ler o seu perfil",
   "calendars.read": "Ler a sua agenda (somente leitura)",
   "mail.read": "Ler e-mails de ata de checkpoint (somente leitura)",
+  "onlinemeetings.read": "Encontrar as suas reuniões do Teams (somente leitura)",
+  "onlinemeetingtranscript.read.all": "Ler transcrições das reuniões do Teams que você organiza (somente leitura)",
 };
 
 function scopeLabel(scope: string): string {
@@ -58,8 +60,17 @@ export interface Microsoft365ConnectionPanelProps {
   canEnableMinutes?: boolean;
 }
 
+function grantedKeys(view: M365ConnectionView | null): Set<string> {
+  return new Set((view?.scopes ?? []).map((s) => s.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase()));
+}
+
 function hasMail(view: M365ConnectionView | null): boolean {
-  return Boolean(view?.scopes.some((s) => s.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase() === "mail.read"));
+  return grantedKeys(view).has("mail.read");
+}
+
+function hasTeams(view: M365ConnectionView | null): boolean {
+  const keys = grantedKeys(view);
+  return keys.has("onlinemeetings.read") && keys.has("onlinemeetingtranscript.read.all");
 }
 
 export function Microsoft365ConnectionPanel({
@@ -79,9 +90,12 @@ export function Microsoft365ConnectionPanel({
   const needsConnect = !view || view.status === "DISCONNECTED" || view.status === "REAUTH_REQUIRED" || view.status === "ERROR";
   const status = view ? STATUS_LABEL[view.status] : STATUS_LABEL.DISCONNECTED;
   const mailEnabled = hasMail(view);
-  // Reconectar mantém a fase consentida (com e-mail, se já estava ativo).
+  const teamsEnabled = hasTeams(view);
+  // Consentimento por conjunto de capacidades: o servidor soma o pedido ao que
+  // já foi consentido, então reconectar mantém e-mail/Teams ativos.
   const minutesHref = `${connectHref}?fase=M2`;
-  const reconnectHref = mailEnabled && canEnableMinutes ? minutesHref : connectHref;
+  const teamsHref = `${connectHref}?fase=M3`;
+  const reconnectHref = connectHref;
 
   function run(action: () => Promise<{ ok: boolean; message?: string }>, success: string) {
     startTransition(async () => {
@@ -283,6 +297,68 @@ export function Microsoft365ConnectionPanel({
         </SectionPanel>
       ) : null}
 
+      {canEnableMinutes ? (
+        <SectionPanel
+          title="Transcrições do Teams"
+          description="Opcional, só para quem registra checkpoints. Pede permissões extras do Teams que exigem o consentimento de um administrador da empresa."
+          action={
+            <StatusBadge tone={teamsEnabled ? "success" : "neutral"} pill>
+              {teamsEnabled ? "Ativo" : "Desligado"}
+            </StatusBadge>
+          }
+        >
+          <div className="space-y-4 px-5 py-5 text-sm text-medium">
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                Depois de um 1:1 ou checkpoint criado pela sua agenda, numa reunião do Teams <strong>que você
+                organizou</strong>, procuramos a transcrição <strong>só na sua conta</strong>, de 10 minutos até 48
+                horas depois do fim.
+              </li>
+              <li>
+                A transcrição vence o e-mail: se ela chegar primeiro, gera a ata. Se a ata por e-mail (ou suas notas)
+                já existir, a transcrição só entra se você pedir, como complemento, sem sobrescrever nada.
+              </li>
+              <li>
+                Só o texto falado é usado (quem falou e o que disse). E-mails, telefones, CPF e CNPJ são mascarados
+                antes da IA. A transcrição original não é guardada; fica só o texto mascarado no checkpoint, com a
+                mesma visibilidade dele.
+              </li>
+              <li>
+                Se a reunião não tiver transcrição, você é avisado para colar suas notas ou aguardar a ata por
+                e-mail. A conta do consultor nunca é usada.
+              </li>
+              <li>Nunca lemos chats, gravações ou reuniões organizadas por outras pessoas.</li>
+            </ul>
+            <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-medium">
+              A permissão de leitura de transcrições exige que um administrador do Microsoft 365 da empresa aprove o
+              aplicativo. Sem essa aprovação, a Microsoft recusa o pedido e nada muda na sua conexão.
+            </p>
+            {view?.status === "ACTIVE" && !teamsEnabled ? (
+              configured ? (
+                <a
+                  href={teamsHref}
+                  className={cn(
+                    "inline-flex h-10 items-center gap-2 rounded-md bg-brand-fill px-4 text-sm font-semibold text-white transition-colors hover:opacity-90",
+                    focusRing,
+                  )}
+                >
+                  <Video aria-hidden="true" className="size-4" />
+                  Ativar transcrições do Teams
+                </a>
+              ) : null
+            ) : null}
+            {!view || view.status !== "ACTIVE" ? (
+              <p className="text-xs text-soft">Conecte (ou retome) a sua conta para ativar as transcrições do Teams.</p>
+            ) : null}
+            {teamsEnabled ? (
+              <p className="text-xs text-soft">
+                Para desligar, desconecte a conta e conecte de novo, ou retire a permissão na sua conta Microsoft.
+              </p>
+            ) : null}
+          </div>
+        </SectionPanel>
+      ) : null}
+
       <SectionPanel title="O que a integração faz" description="Leia antes de conectar.">
         <div className="grid gap-6 px-5 py-5 text-sm text-medium md:grid-cols-3">
           <div>
@@ -300,8 +376,9 @@ export function Microsoft365ConnectionPanel({
             <h3 className="font-semibold text-strong">O que nunca é feito</h3>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Enviar e-mail em seu nome.</li>
-              <li>Ler chats do Teams.</li>
+              <li>Ler chats ou gravações do Teams.</li>
               <li>Ler e-mails, a não ser as atas de checkpoint, se você (gestor) ativar.</li>
+              <li>Ler transcrições do Teams, a não ser das reuniões que você (gestor) organizou, se ativar.</li>
               <li>Criar, alterar ou apagar compromissos.</li>
               <li>Guardar o texto (corpo) dos convites.</li>
               <li>Guardar reuniões marcadas como particulares.</li>
