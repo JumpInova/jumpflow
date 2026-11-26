@@ -1,7 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { LogOut, Maximize, Menu, Minimize } from "lucide-react";
+import Link from "next/link";
+import { LogOut, Maximize, Menu, Minimize, Plug } from "lucide-react";
 import type { AppUser } from "@/lib/auth/types";
 import { primaryRoleLabel } from "@/lib/auth/roles";
 import { NotificationBell } from "./NotificationBell";
@@ -26,6 +27,11 @@ export interface TopbarProps {
    * greater than zero; zero renders a plain bell with no badge.
    */
   unreadCount?: number;
+  /**
+   * Microsoft 365 (M1): link para a conexão pessoal da conta. Só presente com a
+   * integração ligada (decidido no servidor pelo layout).
+   */
+  integrationsHref?: string;
 }
 
 /** Build up to two-letter initials from a display name. */
@@ -46,6 +52,7 @@ export function Topbar({
   onMenuClick,
   notifications = [],
   unreadCount = 0,
+  integrationsHref,
 }: TopbarProps) {
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-surface/90 px-4 backdrop-blur sm:px-6">
@@ -62,6 +69,17 @@ export function Topbar({
         <ThemeToggle className={cn(iconButton, focusRing)} />
 
         <FullscreenButton />
+
+        {integrationsHref ? (
+          <Link
+            href={integrationsHref}
+            aria-label="Microsoft 365: conexão da sua conta"
+            title="Microsoft 365"
+            className={cn(iconButton, focusRing)}
+          >
+            <Plug aria-hidden="true" className="size-5" />
+          </Link>
+        ) : null}
 
         {/* Item 3: central de notificações real. O badge reflete apenas
             notificações NÃO LIDAS e some quando não há nenhuma — nada de número

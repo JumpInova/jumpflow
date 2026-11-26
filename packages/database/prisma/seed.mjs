@@ -1233,6 +1233,8 @@ const PERMISSION_CATALOG = [
   { code: "PAGAMENTOS", name: "Pagamentos", module: "Financeiro", sort: 113, view: FINANCIAL.concat("PEOPLE"), edit: FINANCIAL },
 
   { code: "ADMIN_ACESSOS", name: "Acessos", module: "Administração", sort: 120, view: ADMIN_ONLY, create: ADMIN_ONLY, edit: ADMIN_ONLY, del: ADMIN_ONLY },
+  // Microsoft 365 (M1): visão admin "N de M usuários conectados" (somente leitura).
+  { code: "INTEGRACOES_M365", name: "Integração Microsoft 365", module: "Administração", parent: "ADMIN_ACESSOS", sort: 120, view: ADMIN_ONLY },
   { code: "CONFIGURACOES_PERMISSOES", name: "Matriz de Permissões", module: "Administração", sort: 121, view: ADMIN_ONLY, edit: ADMIN_ONLY },
   { code: "CONFIGURACOES_NOTIFICACOES", name: "Regras de Notificação", module: "Administração", sort: 122, view: ADMIN_ONLY, create: ADMIN_ONLY, edit: ADMIN_ONLY, del: ADMIN_ONLY },
   // Feriados (Onda A-ext): calendário operacional gerido por ADMIN + PEOPLE (DP).

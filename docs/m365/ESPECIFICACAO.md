@@ -134,18 +134,28 @@ conteúdo pessoal.
   - ser organizado por esse gestor;
   - ter exatamente **um** consultor participante, que esteja no escopo do gestor
     (`canTargetConsultant` ou equivalente no servidor);
-  - ter assunto que casa com `/(1:1|1-on-1|one on one|1on1|checkpoint|check-in)/i`
-    **ou** ter a categoria `JumpFlow`.
+  - ter assunto que casa com a regra abaixo **ou** ter a categoria `JumpFlow` **na
+    caixa do gestor organizador** (categoria é por caixa, guardada no sighting).
 
-  Tipo: `ONE_ON_ONE` se o assunto indicar 1:1, senão `CHECKPOINT`.
+  Regra exata do assunto (case-insensitive, com fronteiras):
+  - 1:1 → `(?<![\d:])1:1(?![\d:])|\b1-on-1\b|\bone on one\b|\b1on1\b`
+    ("1:1" não pode ter dígito nem `:` colado: "Daily 11:15", "Sync 21:10" e "1:10" **não** casam);
+  - checkpoint → a regra de 1:1 **ou** `\bcheckpoint\b|\bcheck-in\b` ("Checkpoints" não casa).
+
+  Tipo: `ONE_ON_ONE` se o assunto casar a regra de 1:1, senão `CHECKPOINT`.
 - **Rascunho de Checkpoint:**
   - criado `DRAFT` / `PRIVATE`, com consultor, gestor, `occurredAt` = início do
     evento e título = assunto;
   - vínculo com o evento: FK opcional nova ou tabela de link — decidir com o
     data modeler, migration aditiva;
   - idempotente: um rascunho por evento por consultor;
-  - evento cancelado → rascunho ainda DRAFT e sem conteúdo é marcado/removido (definir
-    e testar).
+  - remarcação: enquanto o rascunho é DRAFT, `occurredAt` acompanha sempre o início do
+    evento; o título acompanha o assunto só enquanto o rascunho não tem conteúdo
+    (notas/transcrição/áudio);
+  - evento cancelado → rascunho ainda DRAFT e sem conteúdo (notas/transcrição nulas ou só
+    espaços, sem áudio) vira `ARCHIVED`. O evento é cancelado quando a **visão do
+    organizador** diz cancelado (ou o organizador o remove da agenda) ou quando nenhum
+    sighting ativo resta; a visão de um participante sozinha não cancela.
 - **Sugestões de horas**, na conta de qualquer usuário conectado que seja consultor:
   - o evento passado da semana com participante externo cujo e-mail ou domínio casa
     com um contato/cliente de um projeto em que o consultor está **alocado** vira

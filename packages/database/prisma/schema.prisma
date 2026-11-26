@@ -667,6 +667,9 @@ enum IntegrationProviderKind {
   TEAMS
   /// Canal de ingestao de projetos vindos do CRM-Jumplabel (oportunidades ganhas).
   CRM_JUMPLABEL
+  /// Integracao Microsoft 365 (Graph, permissao delegada por usuario): agenda,
+  /// atas e transcricoes. Ver docs/m365/ESPECIFICACAO.md.
+  MICROSOFT_365
 }
 
 enum IntegrationEventStatus {
@@ -833,6 +836,9 @@ model User {
   // apenas desvincula quem registrou.
   coeMembersAdded             CoeMember[]                 @relation("CoeMemberAddedBy")
   coeSquadsCreated            CoeSquad[]                  @relation("CoeSquadCreatedBy")
+  // Microsoft 365 (M1): conexao delegada do proprio usuario (opt-in). Removida
+  // em cascata com o usuario (tokens nunca sobrevivem ao dono).
+  m365Connection              M365Connection?
   createdAt                   DateTime                    @default(now())
   updatedAt                   DateTime                    @updatedAt
 }
@@ -1050,6 +1056,8 @@ model Consultant {
   // propostas de time. Ver CoeMember / CoeSquadMember.
   coeMembership       CoeMember?
   coeSquadMemberships CoeSquadMember[]
+  // Microsoft 365 (M1): sugestoes de lancamento de horas vindas da agenda.
+  m365TimeSuggestions M365TimeSuggestion[]
   createdAt           DateTime                       @default(now())
   updatedAt           DateTime                       @updatedAt
 }
@@ -3321,11 +3329,17 @@ model Checkpoint {
   extractedAt         DateTime?
   status              CheckpointStatus           @default(DRAFT)
   visibility          CheckpointVisibility       @default(PRIVATE)
+  /// Microsoft 365 (M1): evento de agenda que originou este rascunho. Opcional;
+  /// SetNull preserva o checkpoint se o evento sair. Unico por (evento,
+  /// consultor): no maximo um rascunho por evento por consultor (idempotencia).
+  calendarEventId     String?
+  calendarEvent       CalendarEvent?             @relation(fields: [calendarEventId], references: [id], onDelete: SetNull)
   opportunities       Opportunity[]
   cases               Case[]
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
+  @@unique([calendarEventId, consultantId])
   @@index([consultantId])
   @@index([consultantId, occurredAt])
   @@index([managerUserId])
@@ -3805,4 +3819,145 @@ model InboundEmail {
 
   @@index([referenceType, referenceId])
   @@index([threadId])
+}
+
+// ── Microsoft 365 (M1: Conexao + Agenda) ─────────────────────────────────────
+// Ver docs/m365/ESPECIFICACAO.md. Permissao DELEGADA por usuario (opt-in),
+// consentimento incremental separado do login. Nunca armazena corpo de convite.
+
+/// Estado da conexao Microsoft 365 de um usuario.
+enum M365ConnectionStatus {
+  ACTIVE
+  PAUSED
+  REAUTH_REQUIRED
+  ERROR
+  DISCONNECTED
+}
+
+/// Conexao delegada de UM usuario com o Microsoft Graph. Tokens SEMPRE cifrados
+/// (field-encryption, AAD "M365Connection.accessToken"/"refreshToken"); ao
+/// desconectar, os tokens sao apagados (null) e o status vira DISCONNECTED.
+/// O lease (`syncLeaseUntil`/`syncLeaseOwner`) e o claim atomico da rodada de
+/// sync no banco: nenhuma trava em memoria (Railway pode ter varias instancias).
+model M365Connection {
+  id                    String               @id @default(cuid())
+  userId                String               @unique
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status                M365ConnectionStatus @default(ACTIVE)
+  /// Cifrados (enc:v1:...). Nunca logar nem expor ao cliente.
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  expiresAt             DateTime?
+  /// Escopos concedidos (como devolvidos pelo token endpoint).
+  scopes                String[]             @default([])
+  tenantId              String?
+  graphUserId           String?
+  /// mail/userPrincipalName conferido com o e-mail do usuario logado.
+  mailbox               String?
+  /// Cursor do delta de /me/calendarView (deltaLink opaco) + janela usada.
+  calendarDeltaLink     String?
+  calendarWindowStart   DateTime?
+  calendarWindowEnd     DateTime?
+  lastSyncAt            DateTime?
+  lastSyncStartedAt     DateTime?
+  /// Codigo curto e seguro (sem token, sem conteudo pessoal).
+  lastError             String?
+  lastErrorAt           DateTime?
+  syncLeaseUntil        DateTime?
+  syncLeaseOwner        String?
+  connectedAt           DateTime             @default(now())
+  sightings             CalendarEventSighting[]
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@index([status, lastSyncAt])
+}
+
+/// Evento de agenda (metadados apenas), unico por iCalUId (o mesmo evento visto
+/// por varias contas e UM registro). NUNCA guarda o corpo do convite. Eventos
+/// privados/confidenciais e series master sao descartados antes de chegar aqui.
+model CalendarEvent {
+  id              String                  @id @default(cuid())
+  iCalUId         String                  @unique
+  subject         String?
+  startAt         DateTime
+  endAt           DateTime
+  isAllDay        Boolean                 @default(false)
+  organizerEmail  String?
+  organizerName   String?
+  /// [{ email, name, type, response }] — sem corpo, sem anexos.
+  attendees       Json                    @default("[]")
+  /// Link de reuniao Teams SOMENTE de host permitido (teams.microsoft.com...).
+  joinUrl         String?
+  onlineMeetingId String?
+  /// Cancelado na visao do ORGANIZADOR (isCancelled ou removido da agenda dele)
+  /// ou quando nenhum sighting ativo resta. A visao de um participante sozinha
+  /// nao cancela o evento enquanto outra caixa ainda o tem ativo.
+  isCancelled     Boolean                 @default(false)
+  sightings       CalendarEventSighting[]
+  checkpoints     Checkpoint[]
+  timeSuggestions M365TimeSuggestion[]
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([startAt])
+  @@index([organizerEmail])
+}
+
+/// Ocorrencia de um CalendarEvent na agenda de UMA conexao (id do Graph e por
+/// caixa). `removedAt` marca que o evento saiu da agenda dessa conta (@removed).
+/// `categories` e `isCancelled` sao POR CAIXA (cada usuario categoriza e ve o
+/// cancelamento na propria agenda).
+model CalendarEventSighting {
+  id              String         @id @default(cuid())
+  calendarEventId String
+  calendarEvent   CalendarEvent  @relation(fields: [calendarEventId], references: [id], onDelete: Cascade)
+  connectionId    String
+  connection      M365Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  graphEventId    String
+  webLink         String?
+  responseStatus  String?
+  categories      String[]       @default([])
+  isCancelled     Boolean        @default(false)
+  lastSeenAt      DateTime
+  removedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([connectionId, graphEventId])
+  @@index([calendarEventId])
+}
+
+/// Estado de uma sugestao de horas vinda da agenda. A sugestao NUNCA lanca
+/// horas: so pre-preenche o formulario. "Ja lancado" e derivado na leitura.
+enum M365TimeSuggestionStatus {
+  PENDING
+  DISMISSED
+}
+
+/// Sugestao de lancamento (projeto, data, duracao) para o consultor a partir de
+/// um evento passado com participante externo de cliente de projeto alocado.
+/// `projectIds` > 1 = o consultor escolhe. Unica por (consultor, evento).
+model M365TimeSuggestion {
+  id              String                   @id @default(cuid())
+  consultantId    String
+  consultant      Consultant               @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  calendarEventId String
+  calendarEvent   CalendarEvent            @relation(fields: [calendarEventId], references: [id], onDelete: Cascade)
+  /// Data-calendario (America/Sao_Paulo) gravada a meia-noite UTC, mesma
+  /// convencao de TimeEntry.date.
+  date            DateTime                 @db.Date
+  startAt         DateTime
+  endAt           DateTime
+  minutes         Int
+  projectIds      String[]                 @default([])
+  /// EMAIL (contato exato do cliente) | DOMAIN (dominio do cliente).
+  matchKind       String
+  status          M365TimeSuggestionStatus @default(PENDING)
+  decidedAt       DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  @@unique([consultantId, calendarEventId])
+  @@index([consultantId, date])
 }

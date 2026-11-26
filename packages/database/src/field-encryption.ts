@@ -36,7 +36,10 @@ const DEV_KEY_ID = "dev";
 /** Chave fixa SOMENTE para desenvolvimento local (nunca usada em producao). */
 const DEV_KEY = Buffer.alloc(KEY_BYTES, "jumpflow-dev-field-key");
 
-/** Campos cifrados (AAD). Mantido em sincronia com o backfill .mjs. */
+/**
+ * Campos cifrados (AAD). Os monetarios sao mantidos em sincronia com o backfill
+ * .mjs; os de Microsoft 365 nascem cifrados e nao passam por backfill.
+ */
 export const ENCRYPTED_FIELDS = {
   consultantHourlyCost: "Consultant.hourlyCost",
   compensationHourlyRate: "ConsultantCompensation.hourlyRate",
@@ -47,6 +50,12 @@ export const ENCRYPTED_FIELDS = {
   allocationCostRateHourlyCost: "ConsultantAllocationCostRate.hourlyCost",
   projectRateHourlyRate: "ConsultantProjectRate.hourlyRate",
   adHocPaymentAmount: "ConsultantAdHocPayment.amount",
+  // Microsoft 365 (M1): tokens delegados do Graph e o code_verifier do PKCE no
+  // cookie do fluxo OAuth. Texto arbitrario (encryptField/decryptField), fora do
+  // backfill monetario (`scripts/encrypt-sensitive-values.mjs` nao os toca).
+  m365AccessToken: "M365Connection.accessToken",
+  m365RefreshToken: "M365Connection.refreshToken",
+  m365OAuthCookie: "M365OAuth.pkceCookie",
 } as const;
 
 export type EncryptedField =

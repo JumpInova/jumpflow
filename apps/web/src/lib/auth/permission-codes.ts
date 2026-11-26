@@ -76,6 +76,13 @@ export const CONSULTANT_PROJECT_HISTORY_CODE = "CONSULTORES_PROJETOS";
 export const CONSULTANT_REPORT_CODE = "CONSULTORES_RELATORIO";
 
 /**
+ * Microsoft 365 (M1): visão admin "N de M usuários conectados" da integração
+ * (somente leitura; nunca expõe token nem conteúdo). Padrão: ADMIN. Child of
+ * `ADMIN_ACESSOS`.
+ */
+export const M365_ADMIN_CODE = "INTEGRACOES_M365";
+
+/**
  * The five consultant-registration groups (M1), each a matrix code. Order is the
  * display order in the consultant detail. `CONSULTANT_COMPENSATION_CODE` keeps
  * its historical name (`_REMUNERACAO`).
@@ -310,6 +317,8 @@ export const SYSTEM_PERMISSION_CODES: ReadonlySet<string> = new Set([
   "SLA_PROJETOS",
   "PAGAMENTOS_RESPOSTAS_EMAIL",
   "CONFIGURACOES_RESPOSTAS_EMAIL",
+  // Microsoft 365 (M1): visão admin de conexões (migration 20261126130100).
+  "INTEGRACOES_M365",
 ]);
 
 /** Whether `code` is a native (seeded) feature — immutable code, not deletable. */
