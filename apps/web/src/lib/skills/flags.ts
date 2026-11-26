@@ -15,12 +15,12 @@
  * passado como prop para o client (a page resolve por request, sem rebuild). A
  * server action de extração revalida este gate — nunca confia no cliente.
  */
-import { isAiProviderConfigured } from "@/lib/ai/provider";
+import { isAiDocumentProviderConfigured } from "@/lib/ai/provider";
 
 /** Whether the AI-assisted CV import is available (flag ON + provider present). */
 export function isCurriculumAiImportEnabled(): boolean {
   return (
     process.env.SKILLS_CV_AI_IMPORT_ENABLED === "true" &&
-    isAiProviderConfigured()
+    isAiDocumentProviderConfigured()
   );
 }
