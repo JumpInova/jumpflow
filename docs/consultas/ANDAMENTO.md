@@ -16,7 +16,7 @@ Também não contam como regressão.
 |---|---|---|
 | C1 | concluída (commit no branch) | APROVADO COM RESSALVAS — menores 1, 2 e 4 entram no início da C2 |
 | C2 | concluída (commit no branch) | APROVADO COM RESSALVAS — menores 1–4 entram no início da C3 |
-| C3 | pendente | — |
+| C3 | concluída (commit no branch) | APROVADO COM RESSALVAS (2 revalidações; ressalvas finais corrigidas) |
 
 ## Fase C1 — dev
 
@@ -417,3 +417,280 @@ APROVADO COM RESSALVAS (2026-11-26). Nenhum bloqueante/importante. Menores a tra
 3. `LIST_LIMIT` aplicado antes do filtro por entidade — filtrar `entity IN (liberadas)` no where.
 4. `horas_ate_decisao` pode ser negativo — GREATEST(...,0) ou null.
 5. Observar desempenho de consulta_projetos / consulta_aprovacoes em produção.
+
+## Fase C3 — dev
+
+### Ressalvas da C2 tratadas primeiro
+1. **Fuso nas views** (migrations C1/C2 editadas no lugar, continuam aditivas): `c."createdAt"` (C1 `consulta_consultores.cadastrado_em`), `p."createdAt"` (`consulta_projetos.cadastrado_em`), `cs."createdAt"` (`consulta_aprovacoes.data_referencia`) e `cs."updatedAt"` (`consulta_skills.atualizado_em`) agora são `((x AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')::date`. Datas de calendário (`date`, `startDate`, `issuedAt`, `lastUsedAt`...) continuam `::date`. Conferido no PGlite: `createdAt = 2026-11-27T01:30Z` → `2026-11-26`.
+2. **Regra única de edição:** alterar visão agora exige `CONSULTAS_CRIAR`, como painel; excluir continua liberado ao dono (limpeza). UI: sem CRIAR, a página da visão troca os "Ajustes" por `OwnerDeleteControl` (só excluir); no painel o link vira "Gerenciar painel" e a página de edição mostra só a exclusão.
+3. **`LIST_LIMIT` depois do filtro de entidade:** `listSavedViews` filtra `entity IN (liberadas)` no `where` do banco.
+4. **`horas_ate_decisao`:** `CASE WHEN decisão >= envio THEN ... END` → NULL quando o registro foi reenviado depois da decisão (nunca negativo).
+
+### Arquivos
+Criados:
+- `packages/database/prisma/migrations/20261129100000_consultas_ia_agendamento/migration.sql` (gerada por `prisma migrate diff` + CHECK visão XOR painel): enums `ConsultaScheduleFrequency`/`ConsultaScheduleRunStatus`, tabelas `ConsultaSchedule`, `ConsultaScheduleRun` (UNIQUE `scheduleId, windowKey`) e `ConsultaAiUsage` (UNIQUE `userId, windowStart`).
+- `apps/web/src/lib/consultas/ai.ts` (puro: catálogo do prompt, instruções, parse/validação da saída, orquestração 1+1, explicação determinística), `schedule.ts` (puro: Zod, fuso via Intl, ocorrências/janelas, status), `xlsx-sheets.ts` (abas comuns à exportação e ao envio; `safeFilename` movido para cá).
+- `apps/web/src/lib/db/consultas-ai.ts` (permissão, rate limit persistido, auditoria), `lib/db/consultas-schedules.ts` (cadastro + job).
+- `apps/web/src/app/api/jobs/consultas-agendadas/route.ts`; `app/app/consultas/agendamentos/{page.tsx,actions.ts,novo/page.tsx,[id]/page.tsx}`.
+- Componentes: `ConsultaAssistant.tsx`, `ScheduleForm.tsx`, `OwnerDeleteControl.tsx`.
+- Testes: `lib/consultas/{ai,schedule,c3}.test.ts`, `lib/db/{consultas-ai,consultas-schedules}.test.ts`, `app/api/jobs/consultas-agendadas/route.test.ts`, `components/consultas/ConsultaAssistant.test.tsx`.
+
+Alterados: `schema.prisma` (3 modelos, 2 enums, relações em User/ConsultaView/ConsultaPanel); `lib/consultas/access.ts` (`schedule`, `ai` — `ai` exige também CRIAR); `lib/db/consultas.ts` (`buildConsultaContext(user, matrix)` para jobs sem sessão; `meta.scheduleId` na auditoria); `lib/db/reports.ts` (`resolveReportScope(user, matrix?)` — sem a matriz segue lendo a da sessão, comportamento idêntico); `lib/db/consultas-saved.ts`; `lib/automation/email/templates.ts` (`buildConsultaAgendadaEmail`); `app/api/consultas/export-file.ts`; `ConsultaBuilder.tsx` (prop `assistant`), `ConsultasNav.tsx` (aba Agendamentos), páginas de visão/painel (link "Agendar envio"), `consultas/page.tsx`; testes da C2 ajustados à regra nova (`c2.test.ts`, `consultas-saved*.test.ts`) e `jobs-route-contract.test.ts`.
+
+### Decisões
+- **Assistente:** só aparece com `CONSULTAS_IA` + `CONSULTAS_CRIAR` (a spec é ad hoc). O prompt recebe `buildPromptCatalog(visibleCatalog(access))`: key, rótulo, tipo, descrição, opções, agregações, métricas visíveis e até 2 exemplos por entidade (já podados). Nunca view/coluna/origem/código de permissão, nunca dados. `json: true` + "JSON" no system. A saída passa por Zod (mensagem do 1º issue para a retentativa) + `validateConsulta` com o acesso do usuário. FORBIDDEN vira aviso genérico na retentativa (não revela o campo oculto). Uma retentativa com o erro; depois "Não consegui montar…". `{"error": …}` = fora do catálogo, sem insistir. A explicação é gerada por `explainSpec` a partir da spec validada. Nada roda sem "Confirmar e rodar" (ou "Ajustar no construtor"); a execução vai pelo `executarConsulta` normal, que revalida tudo.
+- **Rate limit (persistido):** tabela `ConsultaAiUsage`, contador por usuário por minuto via `INSERT … ON CONFLICT DO UPDATE … RETURNING` (atômico entre instâncias); 5/min e 40/hora (soma da última hora, checada antes de incrementar); 1 unidade por pedido (não por tentativa); limpeza oportunista de >24h do próprio usuário. Provider não configurado → "indisponível" sem consumir cota.
+- **Log de uso:** `AuditEvent` `CONSULTA_IA_USADA` (`entityType: Consulta`) com desfecho, tentativas, entidade e modelo — **sem o texto** do usuário (nem trecho).
+- **Agendamento:** visão OU painel; diário/semanal/mensal (dia 29–31 → último dia em meses curtos), hora cheia em São Paulo (via `Intl`). Destinatários = ids de usuários ATIVOS (≤ 50), nunca e-mail livre. Criar/alterar exigem `CONSULTAS_AGENDAR` e que o alvo esteja aberto para quem agenda; só o dono altera/exclui (sem override por papel); excluir não exige AGENDAR. `activeSince` reinicia ao criar, reativar ou mudar horário: ocorrência anterior nunca é enviada. Auditoria `CONSULTA_AGENDAMENTO_CRIADO/ATUALIZADO/EXCLUIDO` (antes/depois).
+- **Job:** janela = dia (diário/semanal) ou mês (mensal); só a ocorrência mais recente já vencida. Claim = `create` do run (UNIQUE) ou `updateMany` condicional que assume RUNNING com lease vencido (10 min) ou FAILED com tentativas < 3. Progresso salvo por destinatário; retentativa não reenvia a quem já recebeu. Lote de 20 execuções por chamada.
+- **Permissão por destinatário:** para cada um, matriz dele (`loadPermissionMatrixForUser`) + `resolveReportScope(user, matrix)` + Dados Sensíveis pelos papéis dele → `buildConsultaContext`. O job não lê a matriz da sessão (teste garante). É preciso: `CONSULTAS`, **`CONSULTAS_EXPORTAR`** (receber planilha é exportar — decisão conservadora), abrir a visão (compartilhamento + entidade) e todos os campos da spec. Senão, `SKIPPED` com motivo (`sem_permissao_exportar`, `sem_acesso_visao`, `campo_sem_permissao`, `sem_acesso_painel`, `nenhuma_visao_acessivel`, `usuario_inativo`…), registrado no run e no `AuditEvent` `CONSULTA_AGENDAMENTO_EXECUTADO`. Do criador só se exige autoridade (ativo + `CONSULTAS` + `CONSULTAS_AGENDAR`); sem ela o envio fica suspenso. Visão privada do criador só chega ao próprio criador.
+- **Arquivo:** um e-mail por destinatário (o conteúdo difere por permissão), XLSX em base64 pelo `getEmailTransport()` existente. Painel: uma aba por visão acessível + aba "Totais" (Visão/Medida/Total); visões ocultas só entram como contagem no e-mail. Exportação auditada como `CONSULTA_EXPORTADA` com o destinatário como ator, `origin: saved_view`, `viewId` e `scheduleId`. Template novo `buildConsultaAgendadaEmail` no padrão de `templates.ts` (sem novo tipo de evento/template editável).
+- Nenhuma dependência nova no projeto (PGlite só no scratchpad).
+
+### Critérios de aceite (C3)
+- [x] Assistente (`CONSULTAS_IA`): linguagem natural → spec via `getAiTextProvider()`, catálogo filtrado (campos E métricas), mesma validação Zod + permissão, 1 retentativa, desistência amigável, explicação determinística, confirmação antes de rodar, oculto sem CRIAR, "indisponível" sem provider.
+- [x] Rate limit por usuário persistido no banco (atômico, multi-instância); uso logado sem o texto.
+- [x] Envio agendado (`CONSULTAS_AGENDAR`) de visão/painel com XLSX anexo, diário/semanal/mensal em hora de SP, destinatários = usuários.
+- [x] Job `/api/jobs/consultas-agendadas` com contrato `CRON_SECRET` (GET = POST), idempotente por janela (UNIQUE) com lease/claim no banco.
+- [x] Execução com a permissão de cada destinatário; sem acesso → pulado e registrado; nunca a permissão do criador.
+- [x] Auditoria de criar/alterar/excluir agendamento (e de cada execução).
+- [x] Ressalvas 1–4 da C2.
+
+### Validação local
+- **vitest** (fase + jobs + auth + e-mail + IA): 2.107/2.107 em 57 arquivos (novos C3: 64 casos).
+- **tsc:** só os 10 erros pré-existentes de `inbound.test.ts`.
+- **eslint:** limpo nos diretórios/arquivos da fase.
+- **Prisma:** `prisma validate` ok; `npm run db:generate` ok.
+- **PGlite (scratchpad, nada contra `DATABASE_URL`):** schema-base + migrations C1, C2 (views) e C3 aplicadas; as 11 views executam; UPSERT do rate limit devolve 1, 2, 3; UNIQUE do run e CHECK visão XOR painel barram.
+
+### Pendências e riscos
+- **Agendador:** o Railway não tem os crons (ADR17). Criar um cron chamando `GET /api/jobs/consultas-agendadas` com `Authorization: Bearer $CRON_SECRET` a cada 15 min (o job tolera chamadas repetidas). Sem isso nada é enviado.
+- **E-mail:** sem `EMAIL_PROVIDER=resend` o transporte é o console (nada sai). Anexo grande (50.000 linhas × várias abas de painel) pode passar do limite do provedor; não há teto de tamanho por enquanto.
+- **Duração:** `maxDuration = 300`, lote de 20 execuções e consultas com timeout de 15s cada. Painéis grandes com muitos destinatários podem precisar de lotes menores.
+- **`CONSULTAS_EXPORTAR` obrigatório para receber:** PM (sem EXPORTAR por padrão) é pulado. Se o produto quiser PM recebendo, basta conceder EXPORTAR na Matriz ou rever a decisão.
+- **IA:** qualidade depende do modelo; o catálogo completo vai no prompt (~dezenas de KB para quem vê tudo). Se o custo pesar, enviar só a entidade provável num 1º passo.
+- **Rate limit por hora** soma janelas sem lock: dois pedidos simultâneos no limite podem passar 1 a mais (o do minuto é atômico).
+- Migrations C1/C2/C3 precisam rodar no deploy, nesta ordem.
+
+## Fase C3 — testes
+
+### Testes criados (4 arquivos, 97 casos: 95 passam + 2 `it.fails` que documentam achados; nenhum código de produção alterado)
+- `apps/web/src/lib/consultas/c3-ai-security.test.ts` (36):
+  - **varredura do prompt por perfil**, com a matriz padrão da §2 (PM, FINANCE, PEOPLE, AREA_MANAGER e ADMIN, nenhum com Dados Sensíveis). Em todas as tentativas:
+    - entidades e campos = exatamente os de `visibleCatalog`;
+    - campo/entidade oculto ausente por key, rótulo e `"field"` dos exemplos;
+    - sem view, `permissionCode`, colunas de escopo (`*_id`), `source`, `column` ou `sensitivity`;
+    - métricas só da sensibilidade permitida, e fórmula oculta ausente;
+    - todo exemplo passa por `validateConsulta` do próprio perfil;
+    - system idêntico para todos e sem catálogo;
+  - **prompt injection**:
+    - "ignore as regras" + IA obediente → recusada nas duas tentativas, desiste;
+    - a retentativa não cita o campo nem a entidade;
+    - campo oculto só no filtro, no sort ou na medida → recusado;
+    - SQL em entidade, campo, operador, logic, agg ou dir → inválido;
+    - chaves `sql`/`scope` → inválidas;
+    - valor malicioso em campo visível vira só VALOR (a spec não carrega escopo);
+    - array ou spec embrulhada → inválido;
+  - **robustez**: inválida→null = indisponível (2 tentativas); JSON truncado 2× = desiste; a spec devolvida é a normalizada;
+  - **explicação**: OU, entre com data relativa e ISO, rótulo de lista, is_null, granularidade, ordenação por medida, limite, sem agrupamento/sem filtros; nunca cita campo fora da spec.
+- `apps/web/src/lib/consultas/c3-schedule-rules.test.ts` (18), regras de São Paulo:
+  - 23h e 00h atravessando o dia UTC;
+  - borda exata (≤ now);
+  - dia 31 em mês de 30 e em fevereiro (2027 e 2028 bissexto);
+  - virada de mês às 22h (01/12 01:30Z → janela de novembro);
+  - semanal: domingo×segunda na virada UTC, virada de ano, chaves distintas por semana;
+  - mensal criado após a ocorrência → só no mês seguinte;
+  - job parado → só a ocorrência mais recente;
+  - Zod: hora, dia, frequência, ids com injeção, 50/51 destinatários, `ownerId` extra;
+  - `runStatus`.
+- `apps/web/src/lib/db/consultas-schedules.c3-security.test.ts` (26):
+  - **Permissões e escopo**:
+    - `resolveReportScope` recebe o usuário (id e papéis do banco) e a matriz DE CADA destinatário;
+    - a matriz do criador é lida só para autoridade;
+    - sessão nunca é usada;
+    - destinatário sem o módulo → `sem_acesso_consultas`;
+    - matriz ilegível → FAILED só para ele;
+    - ROLES de outro papel → pulado;
+    - spec adulterada → nada enviado.
+  - **Criador sem autoridade** (sem AGENDAR, sem módulo, inativo ou removido) → nada consultado nem enviado, todos `criador_sem_permissao`. Alvo excluído → `alvo_excluido`.
+  - **Idempotência**:
+    - 2 jobs concorrentes (`Promise.all`) → 1 e-mail por destinatário;
+    - retomada após crash (lease vencido) não reenvia nem reavalia quem já recebeu;
+    - lease válido não é assumido;
+    - progresso gravado após cada destinatário;
+    - nova janela → novo envio;
+    - lote respeita `batch` sem perder janela.
+  - **Painel**:
+    - XLSX aberto com exceljs: abas só das visões acessíveis (PM: 2 de 5; FINANCE: 3);
+    - os nomes das inacessíveis não aparecem em abas, células, texto, HTML, assunto nem auditoria;
+    - painel PRIVATE/ROLES → `sem_acesso_painel`;
+    - nenhuma acessível → `nenhuma_visao_acessivel`.
+  - **E-mail e auditoria**:
+    - auditoria da execução sem e-mail, nome do alvo ou dados;
+    - HTML escapado (nome com `<script>`);
+    - anexo sem `../`;
+    - job e rota não importam guards/sessão.
+- `apps/web/src/lib/db/consultas-ai.c3-security.test.ts` (18):
+  - **Permissão**:
+    - IA+CRIAR sem módulo → FORBIDDEN, sem cota/auditoria;
+    - injeção no pedido não amplia o catálogo (o catálogo segue o perfil, não o texto);
+    - sucesso não executa SQL de dados.
+  - **Auditoria sem o texto do usuário**, nos 5 desfechos (ok, gave_up, cannot_answer, unavailable/provider null, rate_limited). Varre auditoria, SQL e `console.*`.
+  - **Rate limit**:
+    - por hora: 39 passa, 40 bloqueia;
+    - SUM parametrizado por usuário e janela;
+    - borda do minuto UTC;
+    - Retry-After 1s e 50s;
+    - um único statement atômico, com userId só como parâmetro;
+    - limpeza só do próprio usuário (>24h), e falha nela não bloqueia;
+    - pedido >500 ou não-string → sem cota.
+- **Verificação extra no PGlite** (no scratchpad, nada contra `DATABASE_URL`). Migrations atuais C1 + views C2 + C3:
+  - `Project.createdAt = 2026-12-01T02:59Z` → `cadastrado_em = 2026-11-30`;
+  - `Consultant.createdAt = 2026-11-27T01:30Z` → `2026-11-26`;
+  - decisão anterior ao reenvio → `horas_ate_decisao = NULL`, e posterior → `3.5`.
+  - As demais conversões `::date` são de datas de calendário gravadas à meia-noite UTC (correto manter).
+
+### Resultado
+- **Vitest (suíte inteira):** 5.141 passaram, 15 falharam, 2 *expected fail* (os achados), 1 skip, em 318 arquivos. As 15 falhas em 8 arquivos são exatamente o baseline `next-auth` → `next/server`. Os 4 arquivos novos: 95/95, mais 2 `it.fails`.
+- **tsc (`tsconfig.test.json`):** só os 10 erros pré-existentes de `inbound.test.ts`.
+- **eslint:** limpo nos testes novos e nos arquivos da fase.
+
+### Bugs encontrados
+- **Bloqueante:** nenhum.
+- **Importante:** nenhum.
+- **Menor:**
+  1. **`lib/consultas/catalog.ts:708`.** A fórmula da métrica "% de ocupação" (Consultores) é `SOMA(Allocation.allocationPercent) …` e vai ao prompt da IA, com nome físico Model.campo. Não vaza dado nem campo proibido, mas contraria "prompt sem nomes físicos".
+     - Esperado: fórmula em termos de negócio (ex.: `SOMA(% alocado)`).
+     - Documentado em `it.fails` (`c3-ai-security.test.ts`).
+  2. **`lib/consultas/schedule.ts:172` + `lib/db/consultas-schedules.ts:385`.** A janela do mensal é o mês, e a do diário é o dia. Se o dono muda o dia ou a hora DEPOIS do envio da janela, `activeSince` reinicia, mas a nova ocorrência cai na mesma `windowKey`, que já está SENT.
+     - Exemplo: mensal do dia 5 enviado; o dono muda para o dia 20 → ninguém recebe neste mês. O mesmo vale para o diário das 8h alterado para 18h no mesmo dia.
+     - Esperado: enviar a nova ocorrência (ex.: `windowKey` com dia/hora, ou incluir `activeSince` na chave). Obtido: nada.
+     - Documentado em `it.fails` (`consultas-schedules.c3-security.test.ts`).
+- **Observações (não bloqueiam):**
+  - `catalog.ts:240`: a descrição da entidade Horas, enviada a quem não tem finanças (PM), menciona "o valor-hora de venda vigente na data". É só o conceito, sem campo nem dado.
+  - `scheduleInputSchema.name` aceita quebras de linha e caracteres de controle, que vão para o assunto do e-mail. O transporte Resend é JSON, então não há injeção de cabeçalho, mas vale normalizar.
+  - `getScheduleFormOptions` entrega a quem tem AGENDAR a lista de todos os usuários ativos com e-mail (até 2.000). É coerente com destinatário = usuário, mas é um diretório completo.
+
+### Cobertura dos critérios C3
+- [x] Assistente:
+  - prompt só com `visibleCatalog` (varrido por 5 perfis), sem nomes físicos (ressalva no menor 1) e sem dados;
+  - saída com campo/entidade proibido recusada sem revelar;
+  - retentativa única e desistência amigável;
+  - injection não altera o escopo;
+  - sem IA/CRIAR/módulo → indisponível ou FORBIDDEN;
+  - provider null tratado;
+  - explicação determinística, e nada roda sem confirmar.
+- [x] Rate limit no banco: minuto atômico, hora, Retry-After, limpeza. A auditoria nunca leva o texto.
+- [x] Agendamento:
+  - matriz, escopo e papéis por destinatário;
+  - sem acesso/EXPORTAR → pulado e registrado;
+  - criador sem autoridade → não envia;
+  - idempotência por janela (concorrência, retomada, retry);
+  - janelas de SP (virada de mês, dia 31, fevereiro, semanal);
+  - CRON_SECRET (testes do dev);
+  - sem sessão.
+  - Ressalva no menor 2: mudança de horário dentro da mesma janela.
+- [x] Painel agendado: só abas acessíveis, sem nomes das inacessíveis (planilha, e-mail e auditoria).
+- [x] Ressalvas da C2:
+  - fuso nas views (conferido no PGlite);
+  - regra única de edição (servidor + UI);
+  - filtro de entidade antes do limite;
+  - `horas_ate_decisao` nunca negativo (PGlite).
+
+## Fase C3 — correções
+
+1. **Nome físico no prompt da IA.** A fórmula de "% de ocupação" (Consultores) passou de `SOMA(Allocation.allocationPercent)…` para `SOMA(% alocado) das alocações ativas`. O prompt já não levava `source`/`column`/`view`. Teste novo em `ai.test.ts` monta o prompt com acesso TOTAL (todas as entidades, finanças e Dados Sensíveis) e varre por `Tabela.coluna` e crases: nenhuma ocorrência. O `it.fails` do testador em `c3-ai-security.test.ts` virou `it` e passa.
+2. **Mudar dia/hora não silencia mais a nova ocorrência.** A janela (`windowKey`) passou a ser a ocorrência efetiva, `aaaa-mm-ddTHH` (data + hora em SP), em todas as frequências (antes: dia, ou mês no mensal).
+   - Idempotência mantida: a mesma ocorrência gera a mesma chave (UNIQUE do run).
+   - Regra mantida: ao criar, reativar ou mudar horário, `activeSince` reinicia, e ocorrências já passadas continuam fora.
+   - Nome do anexo continua só com a data (`…_aaaa-mm-dd.xlsx`).
+   - O `it.fails` do mensal (dia 5 → 20 no mesmo mês) virou `it` e passa. Teste novo do diário: 08h enviado, muda para 10h às 09:30, nada antes das 10h, envia às 10h e não repete (`runs` = `…T08`, `…T10`).
+   - Asserções de janela dos testes (meus e do testador) ajustadas ao formato novo; as de período comparam o prefixo (`aaaa-mm-dd` / `aaaa-mm`), preservando a intenção.
+3. **Nome do agendamento (assunto do e-mail).** O Zod recusa caracteres de controle C0/C1, DEL e U+2028/U+2029, inclusive CR, LF e TAB ("O nome não pode ter quebras de linha nem caracteres de controle."). Como defesa em profundidade, `buildConsultaAgendadaEmail` normaliza o nome para uma linha só antes de montar assunto, título e corpo (vale para registros antigos). Testes: 6 nomes maliciosos recusados; assunto sem CR, LF ou U+2028 para um nome legado com `\r\nBcc:`.
+
+Arquivos: `lib/consultas/catalog.ts`, `lib/consultas/schedule.ts`, `lib/db/consultas-schedules.ts` (nome do anexo), `lib/automation/email/templates.ts`. Testes: `lib/consultas/{ai,schedule,c3-schedule-rules,c3-ai-security}.test.ts` e `lib/db/consultas-schedules{,.c3-security}.test.ts`.
+
+Validação:
+- **vitest** (fase, jobs, auth, e-mail e IA): 2.210/2.210, em 61 arquivos; nenhum `it.fails` restante.
+- **tsc:** só os 10 erros pré-existentes.
+- **eslint:** limpo.
+
+## Fase C3 — ajustes do teste real
+
+1. **Vocabulário de datas relativas.** As âncoras novas são `fim_mes`, `inicio_mes_anterior`, `fim_mes_anterior`, `inicio_ano`, `inicio_ano_anterior` e `fim_ano_anterior`. Elas se somam a `hoje`, `inicio_semana` e `inicio_mes`, são resolvidas no dia de São Paulo, e `offsetDays` continua somando dias à âncora.
+   - **Fonte única:** `RELATIVE_ANCHORS` (`types.ts`) alimenta o Zod (`spec.ts`), o construtor (rótulos PT-BR em `RELATIVE_DATE_LABELS`, que o `FilterEditor` já lista), a explicação determinística e o prompt.
+   - **Prompt:** lista as âncoras e dá exemplos — "mês passado" = `between [inicio_mes_anterior, fim_mes_anterior]`, "este mês", "este ano" = `gte inicio_ano`, "ano passado" e "últimos 30 dias". Também orienta a preferir âncoras a contas com `offsetDays`.
+   - **ESPECIFICAÇÃO §5:** atualizada com `RelativeAnchor` e a semântica.
+   - **Testes de borda (`dates.test.ts`):**
+     - virada de ano no fuso de SP (31/12 23:30 SP = 01/01 em UTC);
+     - fevereiro com 28 e com 29 dias;
+     - dia 31 com mês anterior de 30 dias;
+     - "mês passado" inclui o dia 1º;
+     - `offsetDays` sobre as âncoras;
+     - toda âncora tem rótulo.
+2. **Troca silenciosa de métrica.** Regra nova no prompt: nunca substituir o que foi pedido por medida parecida (ex.: receita → horas). Se algum campo, métrica ou entidade necessária não estiver no catálogo fornecido, a IA deve responder `{"error": "fora do catálogo"}`.
+   - Esse caso cai em `cannot_answer`, com a mensagem fixa `AI_FRIENDLY.cannotAnswer`; o texto da IA nunca chega ao usuário.
+   - Testes com provider mockado, em `ai.test.ts` e `consultas-ai.test.ts`: PM pede "receita por projeto" e recebe `CANNOT_ANSWER` sem citar "receita"; a cota consumida é de 1 chamada.
+   - Os testes também checam se a regra está no system prompt.
+
+Arquivos: `lib/consultas/{types,spec,dates,ai}.ts`, `docs/consultas/ESPECIFICACAO.md`. Testes: `lib/consultas/{dates,ai}.test.ts`, `lib/db/consultas-ai.test.ts`.
+
+Validação:
+- **vitest** (fase, jobs, auth, e-mail e IA): 2.220/2.220, em 61 arquivos.
+- **tsc:** só os 10 erros pré-existentes.
+- **eslint:** limpo.
+
+**Risco:** a regra 10 depende de o modelo obedecer. Se ainda trocar a métrica, o próximo passo é um aviso explícito comparando o pedido com as medidas da spec.
+
+- **Reteste (próximo mês):** novas âncoras `inicio_proximo_mes`/`fim_proximo_mes` em `RELATIVE_ANCHORS` (Zod, construtor, explicação, prompt com exemplo "próximo mês") e na §5 da spec. Testes de borda cobrem dezembro→janeiro (inclusive 31/12 23:30 em SP) e janeiro→fevereiro bissexto. Vitest 2.221/2.221; tsc só os 10 erros pré-existentes; eslint limpo.
+
+## Fase C3 — correções 2
+
+1. **(Importante) Posse do run + renovação do lease.**
+   - `ConsultaScheduleRun.claimToken`: o claim (create ou takeover) gera um token com `randomUUID`.
+   - Progresso e fechamento só gravam com `updateMany where { id, claimToken, status: RUNNING }` e `count === 1`. O fechamento também zera o token.
+   - `saveProgress` renova `leaseUntil` (relógio do job + 10 min) **antes de cada envio** e após cada destinatário.
+   - Se perdeu a posse, lança `LostClaimError`: o loop aborta sem enviar mais e esse worker não grava o final nem audita. O resumo ganhou o campo `lost`.
+   - Teste: o worker antigo envia a `u-fin`, grava e "trava" 11 min; o cron novo assume com lease vencido, vê `u-fin` como SENT e envia só a `u-pm`. O antigo perde a posse antes do próximo envio. Resultado: 1 e-mail por destinatário, run final do worker novo (SENT, tentativa 2, token nulo) e uma única auditoria de execução.
+2. **Rate limit:** o UPSERT ficou condicional (`DO UPDATE … WHERE count < limite RETURNING`). Pedido bloqueado no minuto não incrementa, logo não consome a cota da hora. Conferido no PGlite: 1..5, depois sem linha, contador parado em 5.
+3. **Job sem teto de 1000:** os agendamentos ativos são percorridos em páginas de 500 por id (cursor). Teste com 1.203 agendamentos: todos verificados.
+4. **Migration:** CHECKs de faixa para `hour` (0–23), `weekday` (1–7 ou nulo) e `monthDay` (1–31 ou nulo), mais a coluna `claimToken`. A migration é da própria C3, ainda não aplicada. Conferido no PGlite.
+6. **Excluir visão/painel com agendamentos.**
+   - Decisão: excluir com confirmação. A UI avisa "N envio(s) agendado(s) que a/o usa(m) também será(ão) removido(s)", com a contagem via `countSchedulesForTarget`, só para o dono.
+   - A remoção continua atômica, pelo FK em cascata.
+   - Auditoria: o evento de exclusão da visão/painel registra `schedulesRemoved`, e cada agendamento removido ganha um `CONSULTA_AGENDAMENTO_EXCLUIDO` (`reason: visao_excluida | painel_excluido`). Coberto por teste.
+7. **Formulário de agendamento:** usuários vão ao cliente só com id e nome (`select` sem e-mail); a busca é por nome. Coberto por teste.
+8. **Assistente:** a rejeição da server action (rede/servidor) vira a mensagem fixa "Não foi possível falar com o assistente agora…", e o construtor continua. Coberto por teste.
+
+Arquivos:
+- **Código:** `schema.prisma`, a migration C3, `lib/db/{consultas-schedules,consultas-ai,consultas-saved}.ts`, `components/consultas/{OwnerDeleteControl,ViewOwnerPanel,PanelForm,ScheduleForm,ConsultaAssistant}.tsx` e as páginas `visoes/[id]` e `paineis/[id]/editar`.
+- **Testes:** os mocks de run/usuário/agendamento foram ajustados (inclusive nos testes do testador: progresso agora grava também antes do envio).
+
+Validação:
+- **vitest** (fase, jobs, auth, e-mail e IA): 2.227/2.227, em 61 arquivos.
+- **tsc:** só os 10 erros pré-existentes.
+- **eslint:** limpo.
+- **`prisma validate`:** ok, com env fictícia.
+- **`db:generate`:** ok.
+
+## Fase C3 — correções 3
+
+1. **Garantia de entrega: at-least-once.** A idempotência é por janela: uma janela concluída não é reprocessada, e quem consta como SENT não recebe de novo numa retentativa ou retomada.
+   - Não é exactly-once: se o processo cair entre `transport.send` e a gravação do progresso, aquele destinatário pode receber o mesmo arquivo outra vez. Envio por provedor externo e gravação no banco não podem ser atômicos.
+   - Os comentários de `consultas-schedules.ts` (cabeçalho, progresso e `runConsultaSchedules`) foram corrigidos para dizer isso.
+2. **Posse conferida logo antes do `transport.send`.** Depois de `buildWorkbook` e do template, o `saveProgress` confere o token e renova o lease. Se a posse foi perdida, `LostClaimError` (agora relançado pelo `catch` por destinatário) aborta sem enviar. Teste: run reassumido durante a geração → nenhum e-mail, `lost: 1`, e o run fica do outro worker.
+3. **Erro inesperado não perde os SENT desta tentativa.** `executeRun` preenche `outcomes` por referência. No `catch`, quem já recebeu nesta tentativa ou em anteriores continua SENT (e SKIPPED continua SKIPPED); só quem não foi concluído vira FAILED, que é retentável. Teste: falha transitória do Prisma logo após enviar a `u-fin` → run FAILED com `u-fin` SENT; no retry só `u-pm` recebe.
+
+Testes do testador ajustados: o de progresso agora exige que "u-fin SENT" seja gravado antes de qualquer trabalho para "u-pm", tolerando as gravações de posse anteriores.
+
+Validação:
+- **vitest** (fase, jobs, auth, e-mail e IA): 2.229/2.229, em 61 arquivos.
+- **tsc:** só os 10 erros pré-existentes.
+- **eslint:** limpo.
+
+## Fase C3 — veredito do validador
+
+1ª validação: APROVADO COM RESSALVAS (1 importante: posse/lease do run de agendamento → envio duplicado em run > 10 min).
+Revalidação após "correções 2": APROVADO COM RESSALVAS — menores (at-least-once não documentado, posse antes do envio, SENT perdidos em erro inesperado) corrigidos em "correções 3" e conferidos pelo orquestrador (suíte: só as 15 falhas de baseline; tsc só baseline).
+Teste real do assistente contra o DeepSeek (orquestrador): 5 perguntas, 1 tentativa cada, ~1,4 s; datas relativas exatas; PM pedindo receita → cannot_answer; prompt injection → cannot_answer.
+Pendências de deploy: cron no Railway para `/api/jobs/consultas-agendadas`; `EMAIL_PROVIDER=resend`; migrations C1/C2 foram editadas no lugar antes de qualquer aplicação — confirmar que nenhum ambiente as aplicou.

@@ -234,7 +234,7 @@ SELECT
   COALESCE(al."alocacoes_ativas", 0)        AS "alocacoes_ativas",
   COALESCE(al."percentual_alocado", 0)      AS "percentual_alocado",
   COALESCE(al."projetos_ativos", 0)         AS "projetos_ativos",
-  c."createdAt"::date                       AS "cadastrado_em",
+  ((c."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')::date AS "cadastrado_em",
   COALESCE(al."project_manager_ids", ARRAY[]::text[]) AS "project_manager_ids"
 FROM "Consultant" c
 LEFT JOIN LATERAL (

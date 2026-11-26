@@ -1,7 +1,11 @@
 import { prisma } from "@jumpflow/database";
 import { FINANCIAL_ROLES, hasRole } from "@/lib/auth/route-permissions";
 import { can } from "@/lib/auth/permissions";
-import { REPORT_CONSULTANT_FILTER_CODE } from "@/lib/auth/permission-codes";
+import {
+  matrixAllows,
+  REPORT_CONSULTANT_FILTER_CODE,
+  type PermissionMatrix,
+} from "@/lib/auth/permission-codes";
 import type { AppUser } from "@/lib/auth/types";
 import { getConsultantForUser, getHolidayLookup } from "@/lib/db/timesheet";
 import { getEntryExceptions } from "@/lib/timesheet/entry-exceptions";
@@ -182,8 +186,15 @@ export interface ReportScope {
  * - PROJECT_MANAGER -> managed projects (via managerUserId).
  * - AREA_MANAGER / ADMIN -> broad + financials.
  * - FINANCE -> broad + financials + financeHoursLimited.
+ *
+ * `matrix` (opcional): matriz JÁ carregada para `user`. Sem ela, lê a matriz da
+ * sessão atual. Jobs sem sessão (ex.: envio agendado de Consultas, que roda
+ * com a permissão de cada destinatário) PRECISAM passar a matriz do usuário.
  */
-export async function resolveReportScope(user: AppUser): Promise<ReportScope> {
+export async function resolveReportScope(
+  user: AppUser,
+  matrix?: PermissionMatrix,
+): Promise<ReportScope> {
   const isAdmin = hasRole(user, "ADMIN");
   const isAreaManager = hasRole(user, "AREA_MANAGER");
   const isFinance = hasRole(user, "FINANCE");
@@ -197,7 +208,9 @@ export async function resolveReportScope(user: AppUser): Promise<ReportScope> {
   // reimbursements). Fail-closed if the matrix can't be read.
   let canFilterAllConsultants = false;
   try {
-    canFilterAllConsultants = await can(REPORT_CONSULTANT_FILTER_CODE, "view");
+    canFilterAllConsultants = matrix
+      ? matrixAllows(matrix, REPORT_CONSULTANT_FILTER_CODE, "view")
+      : await can(REPORT_CONSULTANT_FILTER_CODE, "view");
   } catch {
     canFilterAllConsultants = false;
   }

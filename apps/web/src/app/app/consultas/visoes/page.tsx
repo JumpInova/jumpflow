@@ -69,7 +69,7 @@ export default async function ConsultasVisoesPage() {
         description="Consultas guardadas para abrir de novo, em tabela ou gráfico. Quem abre uma visão compartilhada vê só os dados que o próprio perfil permite."
         actions={newLink}
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       {demo ? (
         <EmptyState
           icon={Database}

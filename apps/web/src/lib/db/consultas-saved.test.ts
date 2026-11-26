@@ -59,6 +59,10 @@ vi.mock("@jumpflow/database", async () => {
         update: viewUpdate,
         delete: viewDelete,
       },
+      consultaSchedule: {
+        findMany: vi.fn(async () => []),
+        count: vi.fn(async () => 0),
+      },
       consultaPanel: {
         findMany: panelFindMany,
         findUnique: panelFindUnique,
@@ -188,13 +192,17 @@ describe("listagem de visões", () => {
     expect(shared.map((v) => v.id)).toEqual(["all", "roles-pm"]);
     expect(JSON.stringify(shared)).not.toContain("Segredo");
     // O filtro do banco já restringe por dono/ALL/papéis de quem vê.
-    expect(viewFindMany.mock.calls[0][0].where).toEqual({
+    // E só entidades liberadas (no banco, antes do teto de listagem — C3).
+    const where = viewFindMany.mock.calls[0][0].where;
+    expect(where.AND[0]).toEqual({
       OR: [
         { ownerId: "db-pm" },
         { sharing: "ALL" },
         { sharing: "ROLES", sharedRoles: { hasSome: ["PROJECT_MANAGER"] } },
       ],
     });
+    expect(where.AND[1].entity.in).toContain("horas");
+    expect(where.AND[1].entity.in).not.toContain("pagamentos");
   });
 
   it("entidade sem acesso ou campo financeiro somem para quem vê; o dono vê a sua como indisponível", async () => {
@@ -320,6 +328,22 @@ describe("criar, alterar e excluir visão", () => {
     const call = recordAuditEvent.mock.calls[0][0] as { action: string; before: Record<string, unknown> };
     expect(call.action).toBe("CONSULTA_VISAO_EXCLUIDA");
     expect(call.before).toMatchObject({ name: "Horas do time", sharing: "ALL" });
+  });
+
+  it("excluir visão com agendamentos: remove (cascata) e audita cada agendamento removido", async () => {
+    const { prisma } = await import("@jumpflow/database");
+    vi.mocked(prisma.consultaSchedule.findMany).mockResolvedValueOnce([
+      { id: "s1", ownerId: "db-fin", name: "Semanal" },
+      { id: "s2", ownerId: "db-pm", name: "Do PM" },
+    ] as never);
+    viewFindUnique.mockResolvedValue(viewRow({ sharing: "ALL" }));
+    await deleteSavedView(as(finUser), "v1");
+    const events = recordAuditEvent.mock.calls.map((c) => c[0] as { action: string; entityId: string; after: unknown });
+    expect(events[0]).toMatchObject({ action: "CONSULTA_VISAO_EXCLUIDA", after: { schedulesRemoved: 2 } });
+    expect(events.slice(1)).toEqual([
+      expect.objectContaining({ action: "CONSULTA_AGENDAMENTO_EXCLUIDO", entityId: "s1", after: { reason: "visao_excluida" } }),
+      expect.objectContaining({ action: "CONSULTA_AGENDAMENTO_EXCLUIDO", entityId: "s2", after: { reason: "visao_excluida" } }),
+    ]);
   });
 });
 

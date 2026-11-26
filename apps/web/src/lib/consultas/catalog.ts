@@ -705,7 +705,7 @@ export const CONSULTA_ENTITIES: readonly ConsultaEntity[] = [
     metrics: [
       {
         label: "% de ocupação",
-        formula: "SOMA(Allocation.allocationPercent) das alocações ativas",
+        formula: "SOMA(% alocado) das alocações ativas",
         description: "Campo “% alocado (ativo)” deste registro.",
         sensitivity: "publico",
       },

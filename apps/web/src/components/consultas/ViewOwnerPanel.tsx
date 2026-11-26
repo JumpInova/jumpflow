@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { atualizarVisao, excluirVisao } from "@/app/app/consultas/visoes/actions";
+import { scheduleRemovalNotice } from "./OwnerDeleteControl";
 import { ViewForm, type ViewFormValue } from "./ViewForm";
 
 export interface ViewOwnerPanelProps {
@@ -12,10 +13,12 @@ export interface ViewOwnerPanelProps {
   initial: ViewFormValue;
   canShare: boolean;
   grouped: boolean;
+  /** Envios agendados que usam a visão (removidos junto ao excluir). */
+  scheduleCount?: number;
 }
 
 /** Ajustes do dono: nome, visualização, compartilhamento e exclusão. */
-export function ViewOwnerPanel({ viewId, initial, canShare, grouped }: ViewOwnerPanelProps) {
+export function ViewOwnerPanel({ viewId, initial, canShare, grouped, scheduleCount = 0 }: ViewOwnerPanelProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -71,6 +74,7 @@ export function ViewOwnerPanel({ viewId, initial, canShare, grouped }: ViewOwner
           <div role="alertdialog" aria-label="Confirmar exclusão" className="space-y-2">
             <p className="text-sm text-medium">
               Excluir esta visão? Ela some para todos com quem foi compartilhada e dos painéis que a usam.
+              {scheduleRemovalNotice(scheduleCount)}
             </p>
             <div className="flex flex-wrap gap-2">
               <ActionButton size="sm" variant="danger" icon={Trash2} disabled={pending} onClick={remove}>

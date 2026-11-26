@@ -59,6 +59,10 @@ vi.mock("@jumpflow/database", async () => {
         update: viewUpdate,
         delete: viewDelete,
       },
+      consultaSchedule: {
+        findMany: vi.fn(async () => []),
+        count: vi.fn(async () => 0),
+      },
       consultaPanel: {
         findMany: panelFindMany,
         findUnique: panelFindUnique,
@@ -298,7 +302,7 @@ describe("visão: 404 indistinguível entre 'não existe' e 'sem acesso'", () =>
     expect((await errorOf(runSavedView(as(pmUser), "v1")))?.code).toBe("NOT_FOUND");
     viewFindMany.mockResolvedValue([]);
     await listSavedViews(as(pmUser));
-    expect(viewFindMany.mock.calls[0][0].where.OR).not.toContainEqual(expect.objectContaining({ ownerId: expect.anything() }));
+    expect(viewFindMany.mock.calls[0][0].where.AND[0].OR).not.toContainEqual(expect.objectContaining({ ownerId: expect.anything() }));
   });
 });
 
@@ -449,13 +453,21 @@ describe("criar/alterar visão: entrada do cliente", () => {
     expect(viewCreate).not.toHaveBeenCalled();
   });
 
-  it("dono sem CRIAR altera nome/compartilhamento, mas não a spec", async () => {
+  it("regra única de edição (C3): dono sem CRIAR não altera nada da visão (nem spec, nem metadados)", async () => {
     matrixByUser["auth-pm"] = grant("CONSULTAS", "CONSULTAS_PROJETOS");
     viewFindUnique.mockResolvedValue(viewRow({ ownerId: "db-pm" }));
     expect(
       (await errorOf(updateSavedView(as(pmUser), "v1", { ...form, spec: projectsSpec })))?.code,
     ).toBe("FORBIDDEN");
+    expect(
+      (await errorOf(updateSavedView(as(pmUser), "v1", { ...form, name: "Novo nome" })))?.code,
+    ).toBe("FORBIDDEN");
     expect(viewUpdate).not.toHaveBeenCalled();
+  });
+
+  it("dono com CRIAR altera só metadados sem trocar spec nem dono", async () => {
+    matrixByUser["auth-pm"] = grant("CONSULTAS", "CONSULTAS_PROJETOS", "CONSULTAS_CRIAR");
+    viewFindUnique.mockResolvedValue(viewRow({ ownerId: "db-pm" }));
     await updateSavedView(as(pmUser), "v1", { ...form, name: "Novo nome" });
     expect(viewUpdate.mock.calls[0][0].data).not.toHaveProperty("spec");
     expect(viewUpdate.mock.calls[0][0].data).not.toHaveProperty("ownerId");

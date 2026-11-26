@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, EyeOff, LayoutDashboard, Pencil } from "lucide-react";
+import { ArrowLeft, CalendarClock, EyeOff, LayoutDashboard, Pencil } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConsultasNav } from "@/components/consultas/ConsultasNav";
@@ -52,16 +52,25 @@ export default async function ConsultaPainelPage({ params }: { params: Promise<{
               <ArrowLeft aria-hidden="true" className="size-4" />
               Painéis
             </Link>
+            {access.schedule ? (
+              <Link
+                href={`/app/consultas/agendamentos/novo?painel=${encodeURIComponent(panel.id)}`}
+                className={linkButton}
+              >
+                <CalendarClock aria-hidden="true" className="size-4" />
+                Agendar envio
+              </Link>
+            ) : null}
             {panel.isOwner ? (
               <Link href={`/app/consultas/paineis/${encodeURIComponent(panel.id)}/editar`} className={linkButton}>
                 <Pencil aria-hidden="true" className="size-4" />
-                Editar painel
+                {access.create ? "Editar painel" : "Gerenciar painel"}
               </Link>
             ) : null}
           </div>
         }
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       <div className="flex flex-wrap items-center gap-2 text-xs text-soft">
         <SharingBadge sharing={panel.sharing} sharedRoles={panel.sharedRoles} />
         <span>Cada visão mostra os dados conforme o seu perfil de acesso.</span>

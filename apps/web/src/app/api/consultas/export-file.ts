@@ -4,11 +4,17 @@
  * (`/api/consultas/visoes/[id]/exportar`). Recebe dados JÁ autorizados e
  * auditados por `exportConsulta`.
  */
-import { buildWorkbook, defineSheet, xlsxResponse } from "@/lib/export/xlsx";
+import { buildWorkbook, xlsxResponse } from "@/lib/export/xlsx";
 import { buildConsultaCsv } from "@/lib/consultas/csv";
 import { ConsultaError } from "@/lib/consultas/errors";
-import { excelNumFmt, exportCell } from "@/lib/consultas/format";
-import type { ResultRow } from "@/lib/consultas/result";
+import { exportCell } from "@/lib/consultas/format";
+import {
+  dataSheet,
+  safeFilename,
+  totalRows,
+  totalsSheet,
+  uniqueSheetName,
+} from "@/lib/consultas/xlsx-sheets";
 import type { ConsultaExportData } from "@/lib/db/consultas";
 import { csvResponse } from "../relatorios/shared";
 
@@ -19,17 +25,8 @@ export function consultaErrorResponse(error: ConsultaError): Response {
   });
 }
 
-/** Nome de arquivo seguro (sem acentos/espaços/separadores). */
-export function safeFilename(base: string): string {
-  const cleaned = base
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^A-Za-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 60);
-  return cleaned || "consulta";
-}
+/** Nome de arquivo seguro (reexportado de `lib/consultas/xlsx-sheets`). */
+export { safeFilename };
 
 export async function consultaFileResponse(
   data: ConsultaExportData,
@@ -48,36 +45,12 @@ export async function consultaFileResponse(
     return csvResponse(csv, `${filename}.csv`);
   }
 
-  const measures = data.measures;
-  const sheets = [
-    defineSheet<ResultRow>({
-      name: entity.label,
-      rows: data.rows,
-      columns: data.columns.map((column) => ({
-        header: column.label,
-        value: (row) => exportCell(entity, column, row),
-        numFmt: excelNumFmt(column),
-        width: Math.max(14, column.label.length + 2),
-      })),
-    }),
-  ];
-  if (data.totals && measures.length > 0) {
-    const totals = data.totals;
-    sheets.push(
-      defineSheet({
-        name: "Totais",
-        rows: measures,
-        columns: [
-          { header: "Medida", value: (column) => column.label, width: 36 },
-          {
-            header: "Total (todos os registros filtrados)",
-            value: (column) => exportCell(entity, column, totals),
-            numFmt: "#,##0.00",
-            width: 34,
-          },
-        ],
-      }),
-    );
+  const sheetData = { ...data, entity };
+  const used = new Set<string>();
+  const sheets = [dataSheet(sheetData, uniqueSheetName(entity.label, used))];
+  const totals = totalRows(sheetData);
+  if (totals.length > 0) {
+    sheets.push(totalsSheet(totals, uniqueSheetName("Totais", used), false));
   }
   const buffer = await buildWorkbook(sheets);
   return xlsxResponse(buffer, `${filename}.xlsx`);

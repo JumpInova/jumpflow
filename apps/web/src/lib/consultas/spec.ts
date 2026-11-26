@@ -4,7 +4,7 @@
  * compilação. O cliente nunca envia SQL: só esta AST.
  */
 import { z } from "zod";
-import type { ConsultaSpec, FieldType, Op } from "./types";
+import { RELATIVE_ANCHORS, type ConsultaSpec, type FieldType, type Op } from "./types";
 
 /** Limites de tela e exportação (§4.5). */
 export const PAGE_SIZE = 100;
@@ -31,7 +31,7 @@ const keySchema = z
 
 const relativeSchema = z
   .object({
-    relative: z.enum(["hoje", "inicio_mes", "inicio_semana"]),
+    relative: z.enum(RELATIVE_ANCHORS),
     offsetDays: z
       .number()
       .int()

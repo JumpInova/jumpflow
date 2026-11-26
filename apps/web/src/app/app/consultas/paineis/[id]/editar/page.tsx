@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SectionPanel } from "@/components/ui/SectionPanel";
 import { ConsultasNav } from "@/components/consultas/ConsultasNav";
+import { OwnerDeleteControl } from "@/components/consultas/OwnerDeleteControl";
 import { PanelForm } from "@/components/consultas/PanelForm";
 import { requireUser } from "@/lib/auth/guards";
 import { isDatabaseConfigured } from "@/lib/db/config";
@@ -22,16 +23,33 @@ export default async function EditarPainelPage({ params }: { params: Promise<{ i
   const { getPanelForViewer } = await import("@/lib/db/consultas-saved");
   const loaded = await getPanelForViewer(user, id);
   if (!loaded || !loaded.panel.isOwner) notFound();
-  const views = await panelViewOptions(user);
   const { panel } = loaded;
+  const { countSchedulesForTarget } = await import("@/lib/db/consultas-saved");
+  const scheduleCount = await countSchedulesForTarget(user, { kind: "panel", id: panel.id });
+  // Regra única de edição: sem CRIAR o dono só pode excluir o painel.
+  if (!access.create) {
+    return (
+      <div className="space-y-6">
+        <PageHeader eyebrow="Consultas" title={`Painel: ${panel.name}`} />
+        <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
+        <SectionPanel>
+          <div className="p-4">
+            <OwnerDeleteControl kind="painel" id={panel.id} scheduleCount={scheduleCount} />
+          </div>
+        </SectionPanel>
+      </div>
+    );
+  }
+  const views = await panelViewOptions(user);
 
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Consultas" title={`Editar painel: ${panel.name}`} />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       <SectionPanel>
         <div className="p-4">
           <PanelForm
+            scheduleCount={scheduleCount}
             panelId={panel.id}
             unavailableCount={loaded.hiddenCount}
             views={views}

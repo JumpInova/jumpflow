@@ -8,6 +8,7 @@ import { ConsultasNav } from "@/components/consultas/ConsultasNav";
 import type { EditingView } from "@/components/consultas/SaveViewDialog";
 import { requireUser } from "@/lib/auth/guards";
 import { isDatabaseConfigured } from "@/lib/db/config";
+import { isAiProviderConfigured } from "@/lib/ai/provider";
 import { visibleCatalog } from "@/lib/consultas/access";
 import { initialSpec } from "@/lib/consultas/builder";
 import { loadConsultaAccess } from "@/lib/consultas/page-access";
@@ -92,7 +93,7 @@ export default async function ConsultasPage({
         title={editing ? `Editar visão: ${editing.name}` : "Consultas"}
         description="Monte relatórios próprios: escolha a entidade, filtre, agrupe e some. Cada campo está explicado no catálogo de dados."
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
     </>
   );
 
@@ -120,6 +121,7 @@ export default async function ConsultasPage({
         demo={demo}
         initial={initial}
         editing={editing}
+        assistant={access.ai && !demo ? (isAiProviderConfigured() ? "on" : "off") : undefined}
       />
     </div>
   );

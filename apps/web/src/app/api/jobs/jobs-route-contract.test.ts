@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as autoApproval from "@/app/api/jobs/auto-approval/route";
 import * as holidayAlert from "@/app/api/jobs/holiday-alert/route";
 import * as missingTimesheets from "@/app/api/jobs/missing-timesheets/route";
+import * as consultasAgendadas from "@/app/api/jobs/consultas-agendadas/route";
 
 /**
  * Agendadores disparam os paths com um GET request (it cannot send a
@@ -18,6 +19,11 @@ describe("cron job route contract", () => {
   it("missing-timesheets exposes a GET handler aliased to POST", () => {
     expect(typeof missingTimesheets.GET).toBe("function");
     expect(missingTimesheets.GET).toBe(missingTimesheets.POST);
+  });
+
+  it("consultas-agendadas exposes a GET handler aliased to POST", () => {
+    expect(typeof consultasAgendadas.GET).toBe("function");
+    expect(consultasAgendadas.GET).toBe(consultasAgendadas.POST);
   });
 
   it("holiday-alert exposes a GET handler aliased to POST", () => {

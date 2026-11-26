@@ -29,7 +29,7 @@ export default async function ConsultasCatalogoPage() {
         title="Catálogo de dados"
         description="O que cada entidade e cada campo significam, de onde vêm e quem pode vê-los. Use um campo ou exemplo para começar uma consulta."
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       {entities.length === 0 ? (
         <EmptyState
           icon={Lock}

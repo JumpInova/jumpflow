@@ -21,6 +21,10 @@ export interface ConsultaAccess {
   export: boolean;
   /** `CONSULTAS_COMPARTILHAR`: compartilha visões e painéis (ROLES/ALL). */
   share: boolean;
+  /** `CONSULTAS_AGENDAR`: agenda envio de visões/painéis por e-mail. */
+  schedule: boolean;
+  /** `CONSULTAS_IA`: assistente de IA (só com CRIAR — a spec gerada é ad hoc). */
+  ai: boolean;
   /** Chaves das entidades liberadas (view no `permissionCode` da entidade). */
   entities: ReadonlySet<string>;
   /** Campos `financeiro`: mesma regra dos Relatórios (`includeFinancials`). */
@@ -49,6 +53,11 @@ export function buildConsultaAccess(
     create: moduleView && matrixAllows(matrix, CONSULTAS_CODES.create, "view"),
     export: moduleView && matrixAllows(matrix, CONSULTAS_CODES.export, "view"),
     share: moduleView && matrixAllows(matrix, CONSULTAS_CODES.share, "view"),
+    schedule: moduleView && matrixAllows(matrix, CONSULTAS_CODES.schedule, "view"),
+    ai:
+      moduleView &&
+      matrixAllows(matrix, CONSULTAS_CODES.create, "view") &&
+      matrixAllows(matrix, CONSULTAS_CODES.ai, "view"),
     entities,
     financial: columns.financial,
     sensitiveCost: columns.sensitiveCost,
@@ -62,6 +71,8 @@ export const NO_CONSULTA_ACCESS: ConsultaAccess = {
   create: false,
   export: false,
   share: false,
+  schedule: false,
+  ai: false,
   entities: new Set(),
   financial: false,
   sensitiveCost: false,

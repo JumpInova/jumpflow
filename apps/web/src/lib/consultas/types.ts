@@ -33,8 +33,25 @@ export type Op =
   | "is_null"
   | "not_null";
 
+/** Âncoras de data relativa (resolvidas em America/Sao_Paulo). Lista única. */
+export const RELATIVE_ANCHORS = [
+  "hoje",
+  "inicio_semana",
+  "inicio_mes",
+  "fim_mes",
+  "inicio_mes_anterior",
+  "fim_mes_anterior",
+  "inicio_proximo_mes",
+  "fim_proximo_mes",
+  "inicio_ano",
+  "inicio_ano_anterior",
+  "fim_ano_anterior",
+] as const;
+
+export type RelativeAnchor = (typeof RELATIVE_ANCHORS)[number];
+
 export type RelativeDate = {
-  relative: "hoje" | "inicio_mes" | "inicio_semana";
+  relative: RelativeAnchor;
   offsetDays?: number;
 };
 

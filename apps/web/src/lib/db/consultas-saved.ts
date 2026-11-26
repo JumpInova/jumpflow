@@ -7,9 +7,9 @@
  *   sem distinguir "não existe" de "sem acesso" (não vaza nome nem existência);
  * - executar/exportar: a spec é lida do banco e roda com a permissão e o
  *   escopo de linha de QUEM VÊ (`origin: "saved_view"`), nunca do dono;
- * - criar exige `CONSULTAS_CRIAR`; compartilhar (ROLES/ALL) exige
- *   `CONSULTAS_COMPARTILHAR`; alterar/excluir só o dono (sem override por
- *   papel global);
+ * - criar e alterar (visão ou painel) exigem `CONSULTAS_CRIAR`; compartilhar
+ *   (ROLES/ALL) exige `CONSULTAS_COMPARTILHAR`; alterar/excluir só o dono (sem
+ *   override por papel global); excluir não exige CRIAR (limpeza);
  * - painel: ≤ 24 visões; ao renderizar, cada visão é revalidada para quem vê
  *   e as inacessíveis somem (só a CONTAGEM é informada);
  * - auditoria: criar, alterar, compartilhar e excluir.
@@ -279,8 +279,10 @@ export async function listSavedViews(
 ): Promise<{ mine: SavedViewSummary[]; shared: SavedViewSummary[] }> {
   const [context, viewer] = await Promise.all([getConsultaContext(user), resolveViewer(user)]);
   if (!context.access.module) return { mine: [], shared: [] };
+  // Entidades liberadas filtradas NO BANCO: o teto de listagem não pode ser
+  // consumido por visões que a pessoa nunca verá.
   const rows = (await prisma.consultaView.findMany({
-    where: visibleWhere(viewer),
+    where: { AND: [visibleWhere(viewer), { entity: { in: [...context.access.entities] } }] },
     select: viewSelect,
     orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
     take: LIST_LIMIT,
@@ -442,6 +444,10 @@ export async function updateSavedView(
   if (!row || !current || !current.isOwner || !current.available) {
     throw new ConsultaError("NOT_FOUND", NOT_FOUND_MESSAGE);
   }
+  // Regra única de edição (visão e painel): alterar exige CRIAR. Excluir não.
+  if (!context.access.create) {
+    throw new ConsultaError("FORBIDDEN", "Você não tem permissão para editar visões.");
+  }
 
   const parsed = viewInputSchema.safeParse({
     name: input.name,
@@ -457,9 +463,6 @@ export async function updateSavedView(
   let spec: Prisma.InputJsonValue | undefined;
   let entity: string | undefined;
   if (input.spec !== undefined) {
-    if (!context.access.create) {
-      throw new ConsultaError("FORBIDDEN", "Você não tem permissão para criar consultas.");
-    }
     const validated = validateConsulta(input.spec, context.access);
     spec = validated.spec as unknown as Prisma.InputJsonValue;
     entity = validated.entity.key;
@@ -510,6 +513,8 @@ export async function deleteSavedView(user: AppUser, id: string): Promise<void> 
     select: { id: true, ownerId: true, name: true, entity: true, sharing: true, sharedRoles: true },
   });
   if (!row || !isOwner(row, viewer)) throw new ConsultaError("NOT_FOUND", NOT_FOUND_MESSAGE);
+  const schedules = await schedulesOf({ viewId: id });
+  // Os agendamentos da visão saem junto (FK em cascata, atômico) e são auditados.
   await prisma.consultaView.delete({ where: { id } });
   await audit(
     viewer,
@@ -517,8 +522,51 @@ export async function deleteSavedView(user: AppUser, id: string): Promise<void> 
     id,
     "CONSULTA_VISAO_EXCLUIDA",
     { name: row.name, entity: row.entity, ...sharingSnapshot(row) },
-    null,
+    { schedulesRemoved: schedules.length },
   );
+  await auditRemovedSchedules(viewer, schedules, { kind: "view", id });
+}
+
+type LinkedSchedule = { id: string; ownerId: string; name: string };
+
+async function schedulesOf(where: { viewId: string } | { panelId: string }): Promise<LinkedSchedule[]> {
+  return prisma.consultaSchedule.findMany({ where, select: { id: true, ownerId: true, name: true } });
+}
+
+async function auditRemovedSchedules(
+  viewer: Viewer,
+  schedules: LinkedSchedule[],
+  target: { kind: "view" | "panel"; id: string },
+): Promise<void> {
+  for (const schedule of schedules) {
+    await recordAuditEvent({
+      actorUserId: viewer.userId,
+      entityType: "ConsultaSchedule",
+      entityId: schedule.id,
+      action: "CONSULTA_AGENDAMENTO_EXCLUIDO",
+      before: { name: schedule.name, ownerId: schedule.ownerId, target },
+      after: { reason: target.kind === "view" ? "visao_excluida" : "painel_excluido" },
+    });
+  }
+}
+
+/**
+ * Quantos envios agendados (de qualquer pessoa) usam a visão/painel — para a
+ * confirmação de exclusão avisar que serão removidos. Só o dono pergunta.
+ */
+export async function countSchedulesForTarget(
+  user: AppUser,
+  target: { kind: "view" | "panel"; id: string },
+): Promise<number> {
+  const viewer = await resolveViewer(user);
+  const row =
+    target.kind === "view"
+      ? await prisma.consultaView.findUnique({ where: { id: target.id }, select: { ownerId: true } })
+      : await prisma.consultaPanel.findUnique({ where: { id: target.id }, select: { ownerId: true } });
+  if (!row || !isOwner(row, viewer)) return 0;
+  return prisma.consultaSchedule.count({
+    where: target.kind === "view" ? { viewId: target.id } : { panelId: target.id },
+  });
 }
 
 /* ───────────────────────────── Painéis ───────────────────────────── */
@@ -774,6 +822,7 @@ export async function deletePanel(user: AppUser, id: string): Promise<void> {
     select: { id: true, ownerId: true, name: true, sharing: true, sharedRoles: true },
   });
   if (!row || !isOwner(row, viewer)) throw new ConsultaError("NOT_FOUND", PANEL_NOT_FOUND_MESSAGE);
+  const schedules = await schedulesOf({ panelId: id });
   await prisma.consultaPanel.delete({ where: { id } });
   await audit(
     viewer,
@@ -781,6 +830,7 @@ export async function deletePanel(user: AppUser, id: string): Promise<void> {
     id,
     "CONSULTA_PAINEL_EXCLUIDO",
     { name: row.name, ...sharingSnapshot(row) },
-    null,
+    { schedulesRemoved: schedules.length },
   );
+  await auditRemovedSchedules(viewer, schedules, { kind: "panel", id });
 }

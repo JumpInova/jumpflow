@@ -162,12 +162,22 @@ type ConsultaSpec = {
 type Condition = { field: string; op: Op; value?: Value | Value[] };
 type Op = "eq" | "neq" | "in" | "nin" | "contains" | "gt" | "gte" | "lt" | "lte"
         | "between" | "is_null" | "not_null";
-type Value = string | number | boolean | { relative: "hoje" | "inicio_mes" | "inicio_semana"; offsetDays?: number };
+type Value = string | number | boolean | { relative: RelativeAnchor; offsetDays?: number };
+type RelativeAnchor =
+  | "hoje" | "inicio_semana"
+  | "inicio_mes" | "fim_mes" | "inicio_mes_anterior" | "fim_mes_anterior"
+  | "inicio_proximo_mes" | "fim_proximo_mes"
+  | "inicio_ano" | "inicio_ano_anterior" | "fim_ano_anterior";
 ```
 
 - Operadores permitidos por tipo de campo (tabela no código, testada).
 - Datas relativas resolvidas no fuso `America/Sao_Paulo` (usar o util de data do
-  projeto; não fixar UTC−3).
+  projeto; não fixar UTC−3). A âncora dá o dia (semana começa na segunda; `fim_*`
+  é o último dia do período, ex.: 28/29 de fevereiro) e `offsetDays` soma dias a
+  ela. Exemplos: "mês passado" = `between [inicio_mes_anterior, fim_mes_anterior]`;
+  "próximo mês" = `between [inicio_proximo_mes, fim_proximo_mes]`; "este ano" = `gte inicio_ano`; "ano passado" = `between [inicio_ano_anterior,
+  fim_ano_anterior]`. A lista única fica em `RELATIVE_ANCHORS` (`types.ts`) e
+  alimenta Zod, construtor, explicação e prompt da IA.
 - Com `groupBy`: `columns` é ignorado e o resultado são as linhas agrupadas com as
   medidas. Sem `groupBy`, as medidas viram uma linha de totais.
 

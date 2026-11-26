@@ -107,7 +107,7 @@ SELECT
        THEN ROUND(COALESCE(h."horas_aprovadas", 0) * 100 / p."budgetHours", 1)
   END                                       AS "consumo_orcamento",
   p."billingHourlyRate"                     AS "valor_hora_padrao",
-  p."createdAt"::date                       AS "cadastrado_em"
+  ((p."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')::date AS "cadastrado_em"
 FROM "Project" p
 JOIN "Client" cl ON cl."id" = p."clientId"
 LEFT JOIN "User" pm ON pm."id" = p."managerUserId"
@@ -144,11 +144,15 @@ SELECT
   (ap."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo'
                                             AS "decidido_em",
   COALESCE(te."date"::date, ex."date"::date, tf."startDate"::date,
-           ce."issuedAt"::date, cs."createdAt"::date)
+           ce."issuedAt"::date,
+           ((cs."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')::date)
                                             AS "data_referencia",
-  ROUND((EXTRACT(EPOCH FROM (ap."createdAt"
-        - COALESCE(te."submittedAt", ex."submittedAt", tf."requestedAt"))) / 3600)::numeric, 1)
-                                            AS "horas_ate_decisao",
+  -- Negativo acontece quando o registro foi reenviado depois desta decisão
+  -- (submittedAt atual > decisão antiga): sem medida confiável → NULL.
+  CASE WHEN ap."createdAt" >= COALESCE(te."submittedAt", ex."submittedAt", tf."requestedAt")
+       THEN ROUND((EXTRACT(EPOCH FROM (ap."createdAt"
+              - COALESCE(te."submittedAt", ex."submittedAt", tf."requestedAt"))) / 3600)::numeric, 1)
+  END                                       AS "horas_ate_decisao",
   te."hours"                                AS "horas_lancamento",
   ref."consultant_id"                       AS "consultant_id",
   c."name"                                  AS "consultor",
@@ -304,7 +308,7 @@ SELECT
   cs."yearsExperience"                      AS "anos_experiencia",
   cs."lastUsedAt"::date                     AS "ultimo_uso",
   cs."validationStatus"::text               AS "validacao",
-  cs."updatedAt"::date                      AS "atualizado_em",
+  ((cs."updatedAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')::date AS "atualizado_em",
   COALESCE(mg."ids", ARRAY[]::text[])       AS "project_manager_ids"
 FROM "ConsultantSkill" cs
 JOIN "Consultant" c ON c."id" = cs."consultantId"

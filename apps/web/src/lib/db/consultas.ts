@@ -9,6 +9,7 @@
 import { Prisma, prisma } from "@jumpflow/database";
 import type { AppUser } from "@/lib/auth/types";
 import { getCurrentMatrix } from "@/lib/auth/permissions";
+import type { PermissionMatrix } from "@/lib/auth/permission-codes";
 import { canAccessSensitiveCost } from "@/lib/auth/sensitive-data";
 import { resolveReportScope } from "@/lib/db/reports";
 import { recordAuditEvent } from "@/lib/db/audit";
@@ -42,13 +43,34 @@ export interface ConsultaContext {
   scope: RowScope;
 }
 
-/** Acesso + escopo do usuário real. Falha fechada (sem acesso) em erro. */
+const DENIED_CONTEXT: ConsultaContext = {
+  access: NO_CONSULTA_ACCESS,
+  scope: { broad: false, financeHoursLimited: false },
+};
+
+/** Acesso + escopo do usuário real (sessão). Falha fechada (sem acesso) em erro. */
 export async function getConsultaContext(user: AppUser): Promise<ConsultaContext> {
+  let matrix: PermissionMatrix;
   try {
-    const [matrix, reportScope] = await Promise.all([
-      getCurrentMatrix(),
-      resolveReportScope(user),
-    ]);
+    matrix = await getCurrentMatrix();
+  } catch (error) {
+    console.error("[consultas] falha ao ler a matriz; negando", error);
+    return DENIED_CONTEXT;
+  }
+  return buildConsultaContext(user, matrix);
+}
+
+/**
+ * Acesso + escopo de `user` a partir de uma matriz JÁ carregada para ele. É o
+ * caminho dos jobs sem sessão (envio agendado: um contexto por DESTINATÁRIO,
+ * nunca o do criador). Falha fechada.
+ */
+export async function buildConsultaContext(
+  user: AppUser,
+  matrix: PermissionMatrix,
+): Promise<ConsultaContext> {
+  try {
+    const reportScope = await resolveReportScope(user, matrix);
     return {
       access: buildConsultaAccess(matrix, {
         financial: reportScope.includeFinancials,
@@ -64,10 +86,7 @@ export async function getConsultaContext(user: AppUser): Promise<ConsultaContext
     };
   } catch (error) {
     console.error("[consultas] falha ao resolver acesso; negando", error);
-    return {
-      access: NO_CONSULTA_ACCESS,
-      scope: { broad: false, financeHoursLimited: false },
-    };
+    return DENIED_CONTEXT;
   }
 }
 
@@ -174,6 +193,15 @@ function prepare(context: ConsultaContext, raw: unknown, origin: ConsultaOrigin)
 /** Metadados de auditoria quando a spec vem de uma visão salva. */
 export interface ConsultaRunMeta {
   viewId?: string;
+  /** Envio agendado (C3): a execução é do destinatário, disparada pelo job. */
+  scheduleId?: string;
+}
+
+function metaAudit(meta: ConsultaRunMeta): Record<string, string> {
+  return {
+    ...(meta.viewId ? { viewId: meta.viewId } : {}),
+    ...(meta.scheduleId ? { scheduleId: meta.scheduleId } : {}),
+  };
 }
 
 /**
@@ -211,7 +239,7 @@ export async function runConsulta(
       page: window.page,
       totalRows: total,
       origin,
-      ...(meta.viewId ? { viewId: meta.viewId } : {}),
+      ...metaAudit(meta),
     });
   }
 
@@ -287,7 +315,7 @@ export async function exportConsulta(
   await auditSensitiveRun(user, validated, "CONSULTA_EXPORTADA", {
     format,
     origin,
-    ...(meta.viewId ? { viewId: meta.viewId } : {}),
+    ...metaAudit(meta),
     rowCount: rawRows.length,
     totalRows: total,
   });

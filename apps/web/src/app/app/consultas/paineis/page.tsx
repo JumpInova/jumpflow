@@ -63,7 +63,7 @@ export default async function ConsultasPaineisPage() {
           ) : null
         }
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       {demo ? (
         <EmptyState
           icon={Database}

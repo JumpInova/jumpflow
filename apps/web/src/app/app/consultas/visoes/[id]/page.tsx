@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, FileSpreadsheet, FileText, Pencil, TriangleAlert } from "lucide-react";
+import { ArrowLeft, CalendarClock, FileSpreadsheet, FileText, Pencil, TriangleAlert } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SectionPanel } from "@/components/ui/SectionPanel";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConsultasNav } from "@/components/consultas/ConsultasNav";
 import { SavedViewRunner } from "@/components/consultas/SavedViewRunner";
 import { SharingBadge } from "@/components/consultas/SavedItemList";
+import { OwnerDeleteControl } from "@/components/consultas/OwnerDeleteControl";
 import { ViewOwnerPanel } from "@/components/consultas/ViewOwnerPanel";
 import { requireUser } from "@/lib/auth/guards";
 import { isDatabaseConfigured } from "@/lib/db/config";
@@ -35,10 +36,13 @@ export default async function ConsultaVisaoPage({ params }: { params: Promise<{ 
   if (!isDatabaseConfigured()) redirect("/app/consultas/visoes");
 
   const { id } = await params;
-  const { getSavedViewForViewer } = await import("@/lib/db/consultas-saved");
+  const { countSchedulesForTarget, getSavedViewForViewer } = await import("@/lib/db/consultas-saved");
   const loaded = await getSavedViewForViewer(user, id);
   if (!loaded) notFound();
   const { summary, spec } = loaded;
+  const scheduleCount = summary.isOwner
+    ? await countSchedulesForTarget(user, { kind: "view", id: summary.id })
+    : 0;
   const entity = visibleCatalog(access).find((item) => item.key === summary.entity);
   if (!entity) notFound();
   const grouped =
@@ -67,6 +71,15 @@ export default async function ConsultaVisaoPage({ params }: { params: Promise<{ 
                 Editar consulta
               </Link>
             ) : null}
+            {access.schedule && summary.available ? (
+              <Link
+                href={`/app/consultas/agendamentos/novo?visao=${encodeURIComponent(summary.id)}`}
+                className={linkButton}
+              >
+                <CalendarClock aria-hidden="true" className="size-4" />
+                Agendar envio
+              </Link>
+            ) : null}
             {access.export && summary.available ? (
               <>
                 <a href={exportHref("xlsx")} className={linkButton} download>
@@ -82,7 +95,7 @@ export default async function ConsultaVisaoPage({ params }: { params: Promise<{ 
           </div>
         }
       />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       <div className="flex flex-wrap items-center gap-2 text-xs text-soft">
         <SharingBadge sharing={summary.sharing} sharedRoles={summary.sharedRoles} />
         {!summary.isOwner ? <span>Dados exibidos conforme o seu perfil de acesso.</span> : null}
@@ -109,8 +122,10 @@ export default async function ConsultaVisaoPage({ params }: { params: Promise<{ 
         </SectionPanel>
         {summary.isOwner ? (
           <SectionPanel title="Ajustes da visão" description="Só você, como dono, vê esta área.">
+            {access.create ? (
             <ViewOwnerPanel
               viewId={summary.id}
+              scheduleCount={scheduleCount}
               canShare={access.share}
               grouped={grouped}
               initial={{
@@ -121,6 +136,11 @@ export default async function ConsultaVisaoPage({ params }: { params: Promise<{ 
                 sharedRoles: summary.sharedRoles,
               }}
             />
+            ) : (
+              <div className="p-4">
+                <OwnerDeleteControl kind="visao" id={summary.id} scheduleCount={scheduleCount} />
+              </div>
+            )}
           </SectionPanel>
         ) : null}
       </div>

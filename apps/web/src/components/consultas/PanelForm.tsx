@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Save, Trash2, X } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { atualizarPainel, excluirPainel, salvarPainel } from "@/app/app/consultas/visoes/actions";
+import { scheduleRemovalNotice } from "./OwnerDeleteControl";
 import type { RoleName } from "@/lib/auth/roles";
 import {
   MAX_PANEL_ITEMS,
@@ -44,6 +45,8 @@ export interface PanelFormProps {
    * contagem (nunca ids/nomes); o dono escolhe mantê-los ou removê-los.
    */
   unavailableCount?: number;
+  /** Envios agendados que usam o painel (removidos junto ao excluir). */
+  scheduleCount?: number;
 }
 
 /**
@@ -51,7 +54,14 @@ export interface PanelFormProps {
  * mais abrir ficam preservados (o painel os oculta de quem não pode vê-los),
  * mas não aparecem com nome aqui.
  */
-export function PanelForm({ views, initial, canShare, panelId, unavailableCount = 0 }: PanelFormProps) {
+export function PanelForm({
+  views,
+  initial,
+  canShare,
+  panelId,
+  unavailableCount = 0,
+  scheduleCount = 0,
+}: PanelFormProps) {
   const router = useRouter();
   const [value, setValue] = useState<PanelFormValue>(initial);
   const [error, setError] = useState<string | null>(null);
@@ -271,7 +281,10 @@ export function PanelForm({ views, initial, canShare, panelId, unavailableCount 
           {panelId ? (
             confirming ? (
               <>
-                <span className="text-sm text-medium">Excluir este painel para todos?</span>
+                <span className="text-sm text-medium">
+                  Excluir este painel para todos?
+                  {scheduleRemovalNotice(scheduleCount, "o")}
+                </span>
                 <ActionButton type="button" size="sm" variant="danger" icon={Trash2} disabled={pending} onClick={remove}>
                   Sim, excluir
                 </ActionButton>

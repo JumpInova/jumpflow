@@ -189,7 +189,10 @@ describe("C2: entidades novas", () => {
 describe("C2: migration (aditiva e sem custo cifrado)", () => {
   it("timestamp maior que o da migration anterior", () => {
     const dirs = readdirSync(MIGRATIONS).filter((name) => /^\d{14}_/.test(name)).sort();
-    expect(dirs.at(-1)).toBe(C2_DIR);
+    // A C2 vem logo depois da C1 (as fases seguintes, como a C3, vêm depois dela).
+    const c2 = dirs.indexOf(C2_DIR);
+    expect(c2).toBeGreaterThan(0);
+    expect(dirs[c2 - 1]).toBe("20261127100000_consultas_fundacao");
   });
 
   it("nenhuma view lê tabela de custo cifrado, linhas de pagamento ou dado pessoal", () => {

@@ -23,7 +23,7 @@ export default async function NovoPainelPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Consultas" title="Novo painel" description="Escolha até 24 visões salvas e a ordem em que aparecem." />
-      <ConsultasNav canCreate={access.create} />
+      <ConsultasNav canCreate={access.create} canSchedule={access.schedule} />
       <SectionPanel>
         <div className="p-4">
           <PanelForm
