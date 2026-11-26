@@ -105,6 +105,8 @@ async function pullDelta(
 
   for (let page = 0; page < MAX_PAGES_PER_ROUND; page += 1) {
     const result = await graph.calendarViewDelta(request);
+    // Antes de gravar a página: esta rodada ainda é dona do lease?
+    await assertLease(deps, connection.id);
     for (const raw of result.value) await applyItem(deps, connection, raw, now, stats);
     if (result.nextLink) {
       request = { link: result.nextLink };
@@ -122,6 +124,19 @@ async function pullDelta(
     throw new GraphError("http", "Delta sem nextLink nem deltaLink.", { code: "missing_delta_link" });
   }
   throw new GraphError("http", "Paginação do delta excedeu o limite.", { code: "too_many_pages" });
+}
+
+/**
+ * Heartbeat do lease antes de cada fase de efeitos (página do delta, rascunhos,
+ * sugestões). Lease perdido (outra instância assumiu depois do TTL, ou a conexão
+ * foi desconectada/pausada) → encerra a rodada sem gravar mais nada.
+ */
+async function assertLease(deps: CalendarSyncDeps, connectionId: string): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))();
+  const until = new Date(now.getTime() + (deps.leaseMs ?? SYNC_LEASE_MS));
+  if (!(await deps.store.renewSyncLease(connectionId, deps.owner, until))) {
+    throw new ConnectionChangedError();
+  }
 }
 
 async function applyItem(
@@ -155,16 +170,21 @@ async function applyItem(
   const removed = await deps.store.markSightingRemoved(connection.id, result.graphEventId, now);
   // O ORGANIZADOR marcou como privado/confidencial: o evento deixa de guardar
   // assunto/participantes (ou é apagado, se não houver Checkpoint vinculado).
-  if (
-    removed &&
-    result.kind === "skip" &&
-    result.reason === "private" &&
-    mailbox &&
-    (result.organizerEmail === mailbox || removed.organizerEmail === mailbox)
-  ) {
-    await deps.store.redactCalendarEvent(removed.calendarEventId);
-    stats.redacted += 1;
-    return;
+  // Vale também quando o organizador vê o evento privado PELA PRIMEIRA VEZ (sem
+  // sighting dele) e o registro foi criado antes pela caixa de um participante.
+  if (result.kind === "skip" && result.reason === "private" && mailbox) {
+    const organizerView =
+      result.organizerEmail === mailbox || removed?.organizerEmail === mailbox;
+    const eventId =
+      removed?.calendarEventId ??
+      (organizerView && result.iCalUId
+        ? await deps.store.findCalendarEventIdByICalUId(result.iCalUId)
+        : null);
+    if (organizerView && eventId) {
+      await deps.store.redactCalendarEvent(eventId);
+      stats.redacted += 1;
+      return;
+    }
   }
   if (result.kind === "removed") stats.removed += 1;
   else stats.skipped += 1;
@@ -317,12 +337,16 @@ export async function syncCalendarConnection(
       await pullDelta(deps, connection, graph, now, true, stats);
     }
 
+    // Fase de efeitos (arquivar/rascunhos/sugestões): só com o lease ainda nosso.
+    await assertLease(deps, connection.id);
     let draftsArchived = 0;
     for (const calendarEventId of stats.cancelledIds) {
       draftsArchived += await store.archiveDisposableDrafts(calendarEventId);
       await store.deletePendingSuggestions(calendarEventId);
     }
+    await assertLease(deps, connection.id);
     const draftsCreated = await applyCheckpointDrafts(deps, connection, stats);
+    await assertLease(deps, connection.id);
     const suggestions = await applyTimeSuggestions(deps, connection, now);
 
     if (!(await store.recordSyncOutcome(connection.id, { at: now, error: null }, guard))) {

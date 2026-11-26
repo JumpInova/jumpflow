@@ -17,6 +17,7 @@ import {
   resolveM365Credentials,
 } from "@/lib/m365/config";
 import { M365_ERROR_MESSAGES, isM365ErrorCode } from "@/lib/m365/messages";
+import { canRegisterCheckpoint } from "@/lib/checkpoint/visibility";
 
 export const metadata: Metadata = { title: "Microsoft 365" };
 export const dynamic = "force-dynamic";
@@ -61,7 +62,12 @@ export default async function Microsoft365Page({ searchParams }: PageProps) {
           tone: "success",
           text: "Conta Microsoft conectada. A primeira sincronização da agenda acontece em instantes, ou use “Sincronizar agora”.",
         }
-      : null;
+      : status === "atas_ativadas"
+        ? {
+            tone: "success",
+            text: "Atas por e-mail ativadas. Depois de cada 1:1 ou checkpoint da agenda, a ata é procurada na sua caixa por até 7 dias.",
+          }
+        : null;
 
   const canSeeAdmin = await can(M365_ADMIN_CODE, "view");
 
@@ -90,6 +96,7 @@ export default async function Microsoft365Page({ searchParams }: PageProps) {
         connectHref={M365_CONNECT_PATH}
         configured={configured}
         notice={notice}
+        canEnableMinutes={canRegisterCheckpoint(user.roles)}
       />
     </div>
   );

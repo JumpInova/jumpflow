@@ -16,7 +16,9 @@ import {
   archiveCheckpoint,
   setVisibility,
 } from "@/app/app/checkpoints/actions";
+import type { CheckpointM365View } from "@/lib/checkpoint/action-items";
 import { CheckpointInsightsPanel } from "./CheckpointInsightsPanel";
+import { CheckpointM365Panel } from "./CheckpointM365Panel";
 
 function formatDate(iso: string): string {
   return new Intl.DateTimeFormat("pt-BR", {
@@ -31,6 +33,8 @@ export interface CheckpointCardProps {
   insights: CheckpointInsights;
   flags: CheckpointFlags;
   notify: (tone: FeedbackTone, text: string) => void;
+  /** Microsoft 365 (M2): ata por e-mail + cards de ação. Só chega para quem vê o cru. */
+  m365?: CheckpointM365View;
 }
 
 /**
@@ -46,6 +50,7 @@ export function CheckpointCard({
   insights,
   flags,
   notify,
+  m365,
 }: CheckpointCardProps) {
   const [pending, startTransition] = useTransition();
   const [visibility, setVisibilityState] = useState(item.visibility);
@@ -150,6 +155,13 @@ export function CheckpointCard({
           >
             Arquivar
           </ActionButton>
+        </div>
+      ) : null}
+
+      {/* M365 (M2): só para quem vê o cru (o servidor nem envia ao consultor). */}
+      {m365 && item.canViewRaw && (m365.linkedToEvent || m365.minutes || m365.actionItems.length > 0) ? (
+        <div className="mt-4 border-t border-border pt-4">
+          <CheckpointM365Panel checkpointId={item.id} view={m365} canManage={item.canManage} notify={notify} />
         </div>
       ) : null}
 

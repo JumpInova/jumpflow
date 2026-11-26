@@ -34,7 +34,7 @@ export interface MemoryCheckpoint {
 
 export interface MemoryState {
   connections: Map<string, M365ConnectionRecord & { leaseUntil: Date | null; leaseOwner: string | null; lastSyncAt: Date | null; lastError: string | null }>;
-  events: Map<string, NormalizedEvent & { id: string }>; // by iCalUId
+  events: Map<string, NormalizedEvent & { id: string; redactedAt?: Date | null }>; // by iCalUId
   sightings: Map<string, { calendarEventId: string; responseStatus: string | null; removedAt: Date | null; categories: string[]; isCancelled: boolean }>; // key conn|graphId
   users: Map<string, { user: AppUser; consultantId: string | null }>;
   consultantsByEmail: Map<string, string>;
@@ -101,6 +101,15 @@ export function createMemoryStore(): { store: M365Store; state: MemoryState } {
         c.leaseOwner = null;
       }
     },
+    async renewSyncLease(cid, owner, until) {
+      const c = state.connections.get(cid);
+      if (!c || c.status !== "ACTIVE" || c.leaseOwner !== owner) return false;
+      c.leaseUntil = until;
+      return true;
+    },
+    async findCalendarEventIdByICalUId(iCalUId) {
+      return state.events.get(iCalUId)?.id ?? null;
+    },
     async saveCalendarCursor(cid, cursor, guard) {
       if (!allowed(cid, guard)) return false;
       const c = state.connections.get(cid)!;
@@ -125,7 +134,12 @@ export function createMemoryStore(): { store: M365Store; state: MemoryState } {
       // Espelha o Prisma: categories só no sighting; isCancelled do evento só
       // pela visão do organizador.
       const isCancelled = isOrganizerView ? event.isCancelled : existing ? existing.isCancelled : false;
-      state.events.set(event.iCalUId, { ...event, categories: [], isCancelled, id: eventId });
+      if (existing?.redactedAt && !isOrganizerView) {
+        // Redigido pelo organizador: participante não reescreve nada do evento
+        // (só o próprio sighting abaixo).
+      } else {
+        state.events.set(event.iCalUId, { ...event, categories: [], isCancelled, id: eventId, redactedAt: null });
+      }
       state.sightings.set(`${cid}|${event.graphEventId}`, {
         calendarEventId: eventId,
         responseStatus: event.responseStatus,
@@ -149,7 +163,8 @@ export function createMemoryStore(): { store: M365Store; state: MemoryState } {
         for (const [k, s] of state.suggestions) if (s.calendarEventId === eventId) state.suggestions.delete(k);
         return "deleted";
       }
-      Object.assign(e, { subject: null, attendees: [], organizerName: null, joinUrl: null });
+      Object.assign(e, { subject: null, attendees: [], organizerName: null, joinUrl: null, redactedAt: new Date() });
+      for (const s of state.sightings.values()) if (s.calendarEventId === eventId) s.categories = [];
       return "redacted";
     },
     async cancelIfNoActiveSighting(eventId) {

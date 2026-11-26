@@ -12,7 +12,7 @@ import {
   type FetchLike,
   type TokenSet,
 } from "./oauth";
-import { M1_SCOPES, phaseGrantedScopes } from "./scopes";
+import { PHASE_SCOPES, consentedPhase, phaseGrantedScopes, type M365Phase } from "./scopes";
 import {
   ConnectionChangedError,
   type ConnectionWriteGuard,
@@ -39,6 +39,7 @@ export function encryptRefreshToken(token: string): string {
 export function encryptTokenSet(
   tokens: TokenSet,
   previousRefreshEncrypted: string | null,
+  phase: M365Phase = "M1",
 ): {
   accessTokenEncrypted: string;
   refreshTokenEncrypted: string;
@@ -55,8 +56,8 @@ export function encryptTokenSet(
     accessTokenEncrypted: encryptAccessToken(tokens.accessToken),
     refreshTokenEncrypted,
     expiresAt: tokens.expiresAt,
-    // Só o concedido DENTRO da fase vigente; extras nunca vão para `scopes`.
-    scopes: phaseGrantedScopes(tokens.scopes, "M1"),
+    // Só o concedido DENTRO da fase pedida; extras nunca vão para `scopes`.
+    scopes: phaseGrantedScopes(tokens.scopes, phase),
   };
 }
 
@@ -69,6 +70,8 @@ export function needsRefresh(
 }
 
 const CONFIG_CODES = new Set(["invalid_client", "unauthorized_client", "invalid_request"]);
+/** Falhas do refresh M2 que indicam só o escopo de e-mail retirado. */
+const DOWNGRADE_CODES = new Set(["consent_required", "invalid_scope"]);
 
 export interface TokenProviderDeps {
   store: M365Store;
@@ -107,14 +110,34 @@ export function createTokenProvider(deps: TokenProviderDeps): AccessTokenProvide
       await deps.store.setStatus(conn.id, "REAUTH_REQUIRED", "token_decrypt_failed", guard);
       throw new GraphError("reauth", "Refresh token ilegível.", { code: "token_decrypt_failed" });
     }
+    // Fase EFETIVAMENTE consentida (M1, ou M2 se `Mail.Read` foi concedido):
+    // pede exatamente os escopos dela (com offline_access), nunca além — nem
+    // escopo de fase futura mesmo se consentido fora do app.
+    let phase: M365Phase = consentedPhase(conn.scopes);
     let tokens: TokenSet;
     try {
-      tokens = await refreshAccessToken(
-        { credentials: deps.credentials, fetch: deps.fetch, now },
-        // Sempre os escopos da FASE vigente (com offline_access), nunca os
-        // gravados: não pede escopo de fase futura mesmo se já consentido.
-        { refreshToken, scopes: M1_SCOPES },
-      );
+      try {
+        tokens = await refreshAccessToken(
+          { credentials: deps.credentials, fetch: deps.fetch, now },
+          { refreshToken, scopes: PHASE_SCOPES[phase] },
+        );
+      } catch (error) {
+        // `Mail.Read` revogado (consentimento retirado só do e-mail): recua UMA
+        // vez para a M1 — a agenda continua; `scopes` grava só o concedido.
+        if (
+          phase === "M2" &&
+          error instanceof OAuthTokenError &&
+          DOWNGRADE_CODES.has(error.code)
+        ) {
+          phase = "M1";
+          tokens = await refreshAccessToken(
+            { credentials: deps.credentials, fetch: deps.fetch, now },
+            { refreshToken, scopes: PHASE_SCOPES.M1 },
+          );
+        } else {
+          throw error;
+        }
+      }
     } catch (error) {
       if (error instanceof OAuthTokenError) {
         if (error.reauth) {
@@ -128,8 +151,8 @@ export function createTokenProvider(deps: TokenProviderDeps): AccessTokenProvide
       }
       throw error;
     }
-    const encrypted = encryptTokenSet(tokens, conn.refreshTokenEncrypted);
-    if (encrypted.scopes.length === 0) encrypted.scopes = phaseGrantedScopes(conn.scopes, "M1");
+    const encrypted = encryptTokenSet(tokens, conn.refreshTokenEncrypted, phase);
+    if (encrypted.scopes.length === 0) encrypted.scopes = phaseGrantedScopes(conn.scopes, phase);
     // Desconectado/pausado/lease perdido no meio da rodada: não grava (nunca
     // ressuscita tokens) e encerra a rodada.
     if (!(await deps.store.saveTokens(conn.id, encrypted, guard))) {

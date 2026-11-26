@@ -44,6 +44,8 @@ export type NormalizeResult =
       reason: "private" | "series_master" | "invalid";
       /** Só no `private`: organizador (para saber se é a visão dele). */
       organizerEmail?: string | null;
+      /** Só no `private`: iCalUId (o organizador pode ver o evento privado pela 1ª vez). */
+      iCalUId?: string | null;
     };
 
 const DISCARDED_SENSITIVITY = new Set(["private", "confidential", "personal"]);
@@ -119,6 +121,7 @@ export function normalizeGraphEvent(raw: GraphEvent): NormalizeResult {
       graphEventId,
       reason: "private",
       organizerEmail: normalizeEmail(raw.organizer?.emailAddress?.address),
+      iCalUId: (raw.iCalUId ?? "").trim() || null,
     };
   }
   if ((raw.type ?? "").toLowerCase() === "seriesmaster") {

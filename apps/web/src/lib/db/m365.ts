@@ -155,6 +155,19 @@ export const prismaM365Store: M365Store = {
     });
   },
 
+  async renewSyncLease(id, owner, until) {
+    const res = await prisma.m365Connection.updateMany({
+      where: { id, syncLeaseOwner: owner, status: "ACTIVE" },
+      data: { syncLeaseUntil: until },
+    });
+    return res.count === 1;
+  },
+
+  async findCalendarEventIdByICalUId(iCalUId) {
+    const row = await prisma.calendarEvent.findUnique({ where: { iCalUId }, select: { id: true } });
+    return row?.id ?? null;
+  },
+
   async saveCalendarCursor(id, cursor, guard) {
     const res = await prisma.m365Connection.updateMany({
       where: guardedWhere(id, guard),
@@ -191,12 +204,28 @@ export const prismaM365Store: M365Store = {
       joinUrl: event.joinUrl,
     };
     // Cancelamento do EVENTO: só a visão do organizador o define (e o reverte).
-    const row = await prisma.calendarEvent.upsert({
+    // Evento REDIGIDO pelo organizador (ficou privado): um participante não
+    // reescreve assunto/participantes; só a visão do organizador (que voltou a
+    // vê-lo normal) grava de novo e limpa `redactedAt`.
+    const current = await prisma.calendarEvent.findUnique({
       where: { iCalUId: event.iCalUId },
-      create: { iCalUId: event.iCalUId, ...data, isCancelled: isOrganizerView && event.isCancelled },
-      update: isOrganizerView ? { ...data, isCancelled: event.isCancelled } : data,
-      select: { id: true, isCancelled: true },
+      select: { id: true, isCancelled: true, redactedAt: true },
     });
+    let row: { id: string; isCancelled: boolean };
+    if (current?.redactedAt && !isOrganizerView) {
+      row = { id: current.id, isCancelled: current.isCancelled };
+    } else {
+      row = await prisma.calendarEvent.upsert({
+        where: { iCalUId: event.iCalUId },
+        create: { iCalUId: event.iCalUId, ...data, isCancelled: isOrganizerView && event.isCancelled },
+        update: isOrganizerView ? { ...data, isCancelled: event.isCancelled } : data,
+        select: { id: true, isCancelled: true },
+      });
+      if (current?.redactedAt && isOrganizerView) {
+        // O organizador voltou a ver o evento normal: deixa de ser redigido.
+        await prisma.calendarEvent.update({ where: { id: row.id }, data: { redactedAt: null } });
+      }
+    }
     await prisma.calendarEventSighting.upsert({
       where: { connectionId_graphEventId: { connectionId, graphEventId: event.graphEventId } },
       create: {
@@ -243,6 +272,7 @@ export const prismaM365Store: M365Store = {
         organizerName: null,
         joinUrl: null,
         onlineMeetingId: null,
+        redactedAt: new Date(),
       },
     });
     await prisma.calendarEventSighting.updateMany({

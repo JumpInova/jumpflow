@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, Link2, Pause, Play, RefreshCw, Unplug } from "lucide-react";
+import { CalendarCheck, Link2, Mail, Pause, Play, RefreshCw, Unplug } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { FeedbackBanner, useFeedback, type FeedbackTone } from "@/components/ui/Feedback";
 import { SectionPanel } from "@/components/ui/SectionPanel";
@@ -31,6 +31,7 @@ const SCOPE_LABEL: Record<string, string> = {
   offline_access: "Manter a conexão ativa (renovação automática)",
   "user.read": "Ler o seu perfil",
   "calendars.read": "Ler a sua agenda (somente leitura)",
+  "mail.read": "Ler e-mails de ata de checkpoint (somente leitura)",
 };
 
 function scopeLabel(scope: string): string {
@@ -53,9 +54,21 @@ export interface Microsoft365ConnectionPanelProps {
   /** Configuração completa (credenciais/URL). Sem ela, "Conectar" fica desabilitado. */
   configured: boolean;
   notice: { tone: FeedbackTone; text: string } | null;
+  /** M2: o usuário registra checkpoints (gestor) e pode ativar as atas por e-mail. */
+  canEnableMinutes?: boolean;
 }
 
-export function Microsoft365ConnectionPanel({ view, connectHref, configured, notice }: Microsoft365ConnectionPanelProps) {
+function hasMail(view: M365ConnectionView | null): boolean {
+  return Boolean(view?.scopes.some((s) => s.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase() === "mail.read"));
+}
+
+export function Microsoft365ConnectionPanel({
+  view,
+  connectHref,
+  configured,
+  notice,
+  canEnableMinutes = false,
+}: Microsoft365ConnectionPanelProps) {
   const router = useRouter();
   const { feedback, notify } = useFeedback();
   const [pending, startTransition] = useTransition();
@@ -65,6 +78,10 @@ export function Microsoft365ConnectionPanel({ view, connectHref, configured, not
   const connected = view && view.status !== "DISCONNECTED";
   const needsConnect = !view || view.status === "DISCONNECTED" || view.status === "REAUTH_REQUIRED" || view.status === "ERROR";
   const status = view ? STATUS_LABEL[view.status] : STATUS_LABEL.DISCONNECTED;
+  const mailEnabled = hasMail(view);
+  // Reconectar mantém a fase consentida (com e-mail, se já estava ativo).
+  const minutesHref = `${connectHref}?fase=M2`;
+  const reconnectHref = mailEnabled && canEnableMinutes ? minutesHref : connectHref;
 
   function run(action: () => Promise<{ ok: boolean; message?: string }>, success: string) {
     startTransition(async () => {
@@ -134,7 +151,7 @@ export function Microsoft365ConnectionPanel({ view, connectHref, configured, not
             {needsConnect ? (
               configured ? (
                 <a
-                  href={connectHref}
+                  href={view && view.status !== "DISCONNECTED" ? reconnectHref : connectHref}
                   className={cn(
                     "inline-flex h-10 items-center gap-2 rounded-md bg-brand-fill px-4 text-sm font-semibold text-white transition-colors hover:opacity-90",
                     focusRing,
@@ -211,6 +228,61 @@ export function Microsoft365ConnectionPanel({ view, connectHref, configured, not
         </div>
       </SectionPanel>
 
+      {canEnableMinutes ? (
+        <SectionPanel
+          title="Atas por e-mail"
+          description="Opcional, só para quem registra checkpoints. Pede a permissão extra de leitura de e-mail."
+          action={
+            <StatusBadge tone={mailEnabled ? "success" : "neutral"} pill>
+              {mailEnabled ? "Ativo" : "Desligado"}
+            </StatusBadge>
+          }
+        >
+          <div className="space-y-4 px-5 py-5 text-sm text-medium">
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                Depois de um 1:1 ou checkpoint criado pela sua agenda, procuramos <strong>só na sua caixa</strong> o
+                e-mail da ata: com a categoria “JumpFlow” ou com o assunto da reunião, enviado por você ou pelo
+                consultor, até 7 dias depois.
+              </li>
+              <li>
+                Do e-mail escolhido lemos o texto e anexos PDF/DOCX de até 10 MB (PDF escaneado não é lido). Os
+                outros e-mails não são guardados, e se houver dúvida você escolhe qual usar.
+              </li>
+              <li>
+                E-mails, telefones, CPF e CNPJ são mascarados antes da IA. A ata é gravada no checkpoint com a
+                mesma visibilidade dele e guarda os dados reais; o texto original do e-mail fica guardado mascarado.
+                As ações nascem pendentes para você validar.
+              </li>
+              <li>Nunca enviamos, apagamos ou movemos e-mails. A caixa do consultor nunca é lida.</li>
+            </ul>
+            {view?.status === "ACTIVE" && !mailEnabled ? (
+              configured ? (
+                <a
+                  href={minutesHref}
+                  className={cn(
+                    "inline-flex h-10 items-center gap-2 rounded-md bg-brand-fill px-4 text-sm font-semibold text-white transition-colors hover:opacity-90",
+                    focusRing,
+                  )}
+                >
+                  <Mail aria-hidden="true" className="size-4" />
+                  Ativar atas por e-mail
+                </a>
+              ) : null
+            ) : null}
+            {!view || view.status !== "ACTIVE" ? (
+              <p className="text-xs text-soft">Conecte (ou retome) a sua conta para ativar as atas por e-mail.</p>
+            ) : null}
+            {mailEnabled ? (
+              <p className="text-xs text-soft">
+                Para desligar, desconecte a conta e conecte de novo sem ativar as atas, ou retire a permissão na sua
+                conta Microsoft.
+              </p>
+            ) : null}
+          </div>
+        </SectionPanel>
+      ) : null}
+
       <SectionPanel title="O que a integração faz" description="Leia antes de conectar.">
         <div className="grid gap-6 px-5 py-5 text-sm text-medium md:grid-cols-3">
           <div>
@@ -228,7 +300,8 @@ export function Microsoft365ConnectionPanel({ view, connectHref, configured, not
             <h3 className="font-semibold text-strong">O que nunca é feito</h3>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Enviar e-mail em seu nome.</li>
-              <li>Ler e-mails ou chats do Teams.</li>
+              <li>Ler chats do Teams.</li>
+              <li>Ler e-mails, a não ser as atas de checkpoint, se você (gestor) ativar.</li>
               <li>Criar, alterar ou apagar compromissos.</li>
               <li>Guardar o texto (corpo) dos convites.</li>
               <li>Guardar reuniões marcadas como particulares.</li>

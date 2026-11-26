@@ -172,7 +172,10 @@ conteúdo pessoal.
 - **Ingestão estreita, orientada a consulta.** Nada de sync da caixa inteira. Para
   cada Checkpoint em rascunho com evento já encerrado há menos de 7 dias e sem ata, o
   job consulta a caixa **do gestor**:
-  - mensagens com categoria `JumpFlow` recebidas desde o início do evento;
+  - mensagens com categoria `JumpFlow` recebidas desde o início do evento **que também
+    apontem para este checkpoint**: o consultor em from/to/cc **ou** o assunto do evento.
+    Decisão (M2): categoria sozinha não basta; sem essa amarra, a ata do 1:1 de um
+    consultor alimentaria o checkpoint de outro consultor do mesmo gestor;
   - mensagens recebidas entre o início do evento e +7 dias cujo assunto contenha o
     assunto do evento (normalizado, sem RE:/ENC:/FW:) **e** que tenham o consultor ou
     o gestor em from/to/cc.

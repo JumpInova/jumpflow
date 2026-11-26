@@ -821,6 +821,8 @@ model User {
   opportunitiesDecided        Opportunity[]               @relation("OpportunityDecider")
   opportunitiesOwned          Opportunity[]               @relation("OpportunityOwner")
   casesDecided                Case[]                      @relation("CaseDecider")
+  // Microsoft 365 (M2): quem validou um card de Acao/proximo passo da ata.
+  checkpointActionItemsDecided CheckpointActionItem[]     @relation("CheckpointActionItemDecider")
   // Invitations this user created (actor side) and the invitation that created
   // this user on acceptance (at most one).
   invitationsSent             UserInvitation[]            @relation("InvitedBy")
@@ -2942,6 +2944,8 @@ enum NotificationEvent {
   PAYMENT_RELEASED_BY_PEOPLE // DP/People liberou pagamentos -> avisa o Financeiro
   SLA_DEADLINE_APPROACHING // job de SLA: etapa perto do prazo (warningBusinessDays)
   SLA_OVERDUE // job de SLA: etapa com prazo vencido
+  CHECKPOINT_MINUTES_READY // M365 (M2): ata do checkpoint gerada a partir do e-mail (so in-app, ao gestor)
+  CHECKPOINT_MINUTES_CHOICE // M365 (M2): mais de um e-mail candidato; o gestor escolhe (so in-app)
 }
 
 /// Nivel de agregacao em que a regra dispara.
@@ -3336,6 +3340,10 @@ model Checkpoint {
   calendarEvent       CalendarEvent?             @relation(fields: [calendarEventId], references: [id], onDelete: SetNull)
   opportunities       Opportunity[]
   cases               Case[]
+  /// Microsoft 365 (M2): cards de Acao/proximo passo extraidos da ata.
+  actionItems         CheckpointActionItem[]
+  /// Microsoft 365 (M2): estado da busca da ata por e-mail + metadados da origem.
+  emailMinutes        CheckpointEmailMinutes?
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
@@ -3890,6 +3898,10 @@ model CalendarEvent {
   /// Link de reuniao Teams SOMENTE de host permitido (teams.microsoft.com...).
   joinUrl         String?
   onlineMeetingId String?
+  /// Redigido: o ORGANIZADOR marcou o evento como privado/confidencial e ha
+  /// Checkpoint vinculado (assunto/participantes limpos). Enquanto preenchido,
+  /// so a visao do organizador volta a gravar conteudo (participante nao reescreve).
+  redactedAt      DateTime?
   /// Cancelado na visao do ORGANIZADOR (isCancelled ou removido da agenda dele)
   /// ou quando nenhum sighting ativo resta. A visao de um participante sozinha
   /// nao cancela o evento enquanto outra caixa ainda o tem ativo.
@@ -3960,4 +3972,85 @@ model M365TimeSuggestion {
 
   @@unique([consultantId, calendarEventId])
   @@index([consultantId, date])
+}
+
+// ── Microsoft 365 (M2: E-mail de atas -> ata do Checkpoint -> cards) ─────────
+// Ingestao ESTREITA orientada a consulta: so a caixa do GESTOR do Checkpoint e
+// consultada, so para rascunhos vinculados a evento encerrado ha < 7 dias. O
+// e-mail bruto NUNCA e guardado: so os metadados da origem (internetMessageId,
+// webLink, recebido em). O texto-fonte guardado (Checkpoint.transcription) ja
+// esta MASCARADO (e-mail, telefone, CPF, CNPJ).
+
+/// Estado da busca da ata por e-mail de um Checkpoint.
+/// SEARCHING = ainda procurando (job reconsulta); AMBIGUOUS = mais de uma
+/// candidata empatada, o gestor escolhe na tela (nenhuma candidata e guardada);
+/// DONE = ata gravada; FAILED = erro definitivo (ex.: corpo/anexos sem texto).
+enum CheckpointEmailMinutesStatus {
+  SEARCHING
+  AMBIGUOUS
+  DONE
+  FAILED
+}
+
+/// Busca/origem da ata por e-mail de UM Checkpoint (1:1 com o Checkpoint).
+/// `internetMessageId` e UNICO: um e-mail alimenta no maximo um Checkpoint
+/// (idempotencia garantida pelo banco). Nenhum campo guarda assunto, remetente,
+/// corpo ou anexo do e-mail. `aiSummary` = a ata foi resumida pela IA (false =
+/// IA indisponivel, so o texto-fonte mascarado foi importado).
+model CheckpointEmailMinutes {
+  id                 String                       @id @default(cuid())
+  checkpointId       String                       @unique
+  checkpoint         Checkpoint                   @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  status             CheckpointEmailMinutesStatus @default(SEARCHING)
+  internetMessageId  String?                      @unique
+  /// Link do Outlook (so https em host da Microsoft).
+  webLink            String?
+  receivedAt         DateTime?
+  attachmentsUsed    Int                          @default(0)
+  /// Anexos PDF sem texto extraivel (escaneados) — nao suportados.
+  attachmentsSkipped Int                          @default(0)
+  aiSummary          Boolean                      @default(false)
+  attempts           Int                          @default(0)
+  lastCheckedAt      DateTime?
+  /// Codigo curto e seguro (sem conteudo pessoal).
+  lastError          String?
+  completedAt        DateTime?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  @@index([status, lastCheckedAt])
+}
+
+/// Estado de um card de Acao/proximo passo: PENDING (sugerido pela IA, aguarda o
+/// gestor), ACCEPTED (aceito), DONE (concluido), DISMISSED (descartado).
+enum CheckpointActionItemStatus {
+  PENDING
+  ACCEPTED
+  DONE
+  DISMISSED
+}
+
+/// Card de Acao/proximo passo extraido da ata de um Checkpoint (M365 M2). Herda
+/// a visibilidade do Checkpoint (PRIVATE: o consultor nao ve). Nasce PENDING e
+/// so muda por clique humano. `ownerText`/`dueText`/`title`/`sourceQuote` sao
+/// texto livre da ata ja DESMASCARADO (dados reais; a IA so viu o texto
+/// mascarado); `dueDate` so quando a ata traz uma data inequivoca (AAAA-MM-DD).
+model CheckpointActionItem {
+  id              String                     @id @default(cuid())
+  checkpointId    String
+  checkpoint      Checkpoint                 @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  title           String
+  ownerText       String?
+  dueDate         DateTime?                  @db.Date
+  dueText         String?
+  sourceQuote     String?
+  aiGenerated     Boolean                    @default(true)
+  status          CheckpointActionItemStatus @default(PENDING)
+  decidedByUserId String?
+  decidedBy       User?                      @relation("CheckpointActionItemDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([checkpointId, status])
 }

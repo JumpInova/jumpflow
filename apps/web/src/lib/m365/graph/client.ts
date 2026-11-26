@@ -1,6 +1,14 @@
 import type { FetchLike } from "../oauth";
 import { GraphError, kindForStatus } from "./errors";
-import type { GraphDeltaPage, GraphEvent, GraphMe } from "./types";
+import type {
+  GraphAttachmentContent,
+  GraphAttachmentMeta,
+  GraphDeltaPage,
+  GraphEvent,
+  GraphMe,
+  GraphMessage,
+  GraphMessageBody,
+} from "./types";
 
 /**
  * Cliente Microsoft Graph — `fetch` puro, sem SDK.
@@ -23,11 +31,107 @@ export type CalendarDeltaRequest =
   | { link: string }
   | { startDateTime: string; endDateTime: string };
 
+/**
+ * M2 — busca ESTREITA de mensagens na caixa do próprio usuário (gestor). Nunca
+ * lista a caixa inteira: ou filtra pela categoria (`category`), ou procura pelo
+ * assunto (`subject`). A janela (`since`/`until`) é reaplicada localmente.
+ */
+export type MessageQuery =
+  | { kind: "category"; category: string; since: string; until: string }
+  | { kind: "subject"; subject: string; since: string; until: string };
+
 export interface GraphClient {
   getMe(): Promise<GraphMe>;
   calendarViewDelta(
     request: CalendarDeltaRequest,
   ): Promise<GraphDeltaPage<GraphEvent>>;
+  /** M2: metadados (sem corpo) das mensagens que casam a consulta. */
+  findMessages(query: MessageQuery): Promise<GraphMessage[]>;
+  /** M2: metadados de UMA mensagem (para a escolha manual do gestor). */
+  getMessage(messageId: string): Promise<GraphMessage>;
+  /** M2: corpo da mensagem escolhida (texto preferido; só em memória). */
+  getMessageBody(messageId: string): Promise<GraphMessageBody>;
+  listAttachments(messageId: string): Promise<GraphAttachmentMeta[]>;
+  getAttachment(messageId: string, attachmentId: string): Promise<GraphAttachmentContent>;
+}
+
+/** Campos lidos de uma mensagem na busca (nunca body/bodyPreview). */
+export const MESSAGE_SELECT =
+  "id,internetMessageId,subject,receivedDateTime,from,toRecipients,ccRecipients,categories,webLink,hasAttachments,isDraft";
+/** Teto de mensagens lidas por consulta (busca estreita). */
+export const MESSAGE_QUERY_LIMIT = 25;
+/** Teto do corpo aceito (caracteres). */
+export const MESSAGE_BODY_MAX_CHARS = 512 * 1024;
+
+/**
+ * Id como UM segmento de caminho. `encodeURIComponent` não escapa ".", e o
+ * parser de URL normaliza "." e ".." (inclusive "%2E%2E") como segmentos de
+ * ponto: esses ids viram um literal inofensivo (o Graph devolve 404), nunca
+ * saem de `/me/messages/{id}`. A action também valida o formato antes.
+ */
+export function pathSegment(id: string): string {
+  const encoded = encodeURIComponent(id);
+  return /^\.{1,2}$/.test(id) ? encoded.replace(/\./g, "%252E") : encoded;
+}
+
+/** Escapa aspas simples para literal OData. */
+export function odataString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * KQL do `$search` por assunto: só letras/dígitos/espaço (o resto vira espaço),
+ * entre aspas duplas. Pendência de validação real: tokenização do Exchange.
+ */
+export function subjectSearchTerm(subject: string): string {
+  const clean = subject
+    .slice(0, 1000)
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+  return `"subject:${clean}"`;
+}
+
+function buildMessageQueryUrl(query: MessageQuery): string {
+  const url = new URL(`${GRAPH_BASE_URL}/me/messages`);
+  url.searchParams.set("$select", MESSAGE_SELECT);
+  url.searchParams.set("$top", String(MESSAGE_QUERY_LIMIT));
+  if (query.kind === "category") {
+    url.searchParams.set(
+      "$filter",
+      `categories/any(c:c eq ${odataString(query.category)}) and receivedDateTime ge ${query.since} and receivedDateTime le ${query.until}`,
+    );
+  } else {
+    // $search não combina com $filter em mensagens: a janela e os participantes
+    // são reaplicados localmente (seleção pura).
+    url.searchParams.set("$search", subjectSearchTerm(query.subject));
+  }
+  return url.toString();
+}
+
+function bodyType(value: unknown): "text" | "html" {
+  return String(value ?? "").toLowerCase() === "html" ? "html" : "text";
+}
+
+function attachmentKind(odataType: unknown): GraphAttachmentMeta["kind"] {
+  const t = String(odataType ?? "").toLowerCase();
+  if (t.endsWith("itemattachment")) return "item";
+  if (t.endsWith("referenceattachment")) return "reference";
+  return "file";
+}
+
+function mapAttachmentMeta(a: Record<string, unknown>): GraphAttachmentMeta {
+  const size = Number(a?.size);
+  return {
+    id: typeof a?.id === "string" ? a.id : "",
+    name: typeof a?.name === "string" && a.name ? a.name : "anexo",
+    contentType: typeof a?.contentType === "string" && a.contentType ? a.contentType : null,
+    size: Number.isFinite(size) && size >= 0 ? size : 0,
+    isInline: Boolean(a?.isInline),
+    kind: attachmentKind(a?.["@odata.type"]),
+  };
 }
 
 /** Fornece o access token; `refresh` força renovação (após 401). */
@@ -98,7 +202,7 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
     return options.deadline === undefined ? Number.POSITIVE_INFINITY : options.deadline - now();
   }
 
-  async function once(url: string, token: string): Promise<Response> {
+  async function once(url: string, token: string, extraPrefer?: string): Promise<Response> {
     const budget = remaining();
     if (budget <= 0) {
       throw new GraphError("http", "Prazo da rodada esgotado.", { cause: "deadline" });
@@ -112,7 +216,7 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
-          Prefer: `outlook.timezone="UTC", odata.maxpagesize=${pageSize}`,
+          Prefer: `outlook.timezone="UTC", odata.maxpagesize=${pageSize}${extraPrefer ? `, ${extraPrefer}` : ""}`,
         },
         signal: controller.signal,
       });
@@ -143,12 +247,12 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
     });
   }
 
-  async function getJson<T>(url: string): Promise<T> {
+  async function getJson<T>(url: string, extraPrefer?: string): Promise<T> {
     let token = await options.tokens.get();
     let refreshed = false;
     let attempt = 0;
     for (;;) {
-      const res = await once(url, token);
+      const res = await once(url, token, extraPrefer);
       if (res.ok) {
         try {
           return (await res.json()) as T;
@@ -209,6 +313,56 @@ export function createHttpGraphClient(options: HttpGraphClientOptions): GraphCli
         nextLink: json["@odata.nextLink"] ?? null,
         deltaLink: json["@odata.deltaLink"] ?? null,
       };
+    },
+
+    async findMessages(query) {
+      const json = await getJson<{ value?: GraphMessage[] }>(buildMessageQueryUrl(query));
+      const value = Array.isArray(json.value) ? json.value : [];
+      return value.filter((m) => typeof m?.id === "string" && m.id).slice(0, MESSAGE_QUERY_LIMIT);
+    },
+
+    async getMessage(messageId) {
+      const json = await getJson<GraphMessage>(
+        `${GRAPH_BASE_URL}/me/messages/${pathSegment(messageId)}?$select=${MESSAGE_SELECT}`,
+      );
+      if (!json?.id) throw new GraphError("not_found", "Mensagem sem id.", { code: "invalid_message" });
+      return json;
+    },
+
+    async getMessageBody(messageId) {
+      // Corpo em TEXTO (o Graph converte); uniqueBody = só a parte nova.
+      const json = await getJson<{
+        body?: { contentType?: string; content?: string } | null;
+        uniqueBody?: { contentType?: string; content?: string } | null;
+      }>(
+        `${GRAPH_BASE_URL}/me/messages/${pathSegment(messageId)}?$select=body,uniqueBody`,
+        'outlook.body-content-type="text"',
+      );
+      const unique = json?.uniqueBody && typeof json.uniqueBody.content === "string" ? json.uniqueBody : null;
+      return {
+        contentType: bodyType(json?.body?.contentType),
+        content:
+          typeof json?.body?.content === "string" ? json.body.content.slice(0, MESSAGE_BODY_MAX_CHARS) : "",
+        uniqueContentType: unique ? bodyType(unique.contentType) : null,
+        uniqueContent: unique ? String(unique.content).slice(0, MESSAGE_BODY_MAX_CHARS) : null,
+      };
+    },
+
+    async listAttachments(messageId) {
+      const json = await getJson<{ value?: Record<string, unknown>[] }>(
+        `${GRAPH_BASE_URL}/me/messages/${pathSegment(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
+      );
+      const value = Array.isArray(json.value) ? json.value : [];
+      return value.map(mapAttachmentMeta).filter((a) => a.id);
+    },
+
+    async getAttachment(messageId, attachmentId) {
+      const json = await getJson<Record<string, unknown>>(
+        `${GRAPH_BASE_URL}/me/messages/${pathSegment(messageId)}/attachments/${pathSegment(attachmentId)}`,
+      );
+      const meta = mapAttachmentMeta(json);
+      const b64 = typeof json?.contentBytes === "string" ? json.contentBytes : "";
+      return { ...meta, bytes: new Uint8Array(Buffer.from(b64, "base64")) };
     },
   };
 }

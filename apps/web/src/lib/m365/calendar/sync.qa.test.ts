@@ -148,6 +148,7 @@ describe("delta / 410", () => {
   it("delta sem nextLink nem deltaLink → erro com código, sem gravar cursor", async () => {
     const { store, state } = setup();
     const graph: GraphClient = {
+      ...createFakeGraphClient(),
       getMe: async () => ({ id: "x", mail: null, userPrincipalName: null }),
       calendarViewDelta: async () => ({ value: [], nextLink: null, deltaLink: null }),
     };
@@ -178,6 +179,7 @@ describe("lease concorrente (job × 'Sincronizar agora')", () => {
     const gate = new Promise<void>((r) => (release = r));
     let deltaCalls = 0;
     const slow: GraphClient = {
+      ...inner,
       getMe: () => inner.getMe(),
       calendarViewDelta: async (req) => {
         deltaCalls += 1;

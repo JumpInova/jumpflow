@@ -85,9 +85,11 @@ describe("tokens cifrados + refresh", () => {
 });
 
 describe("correções M1 (validador) — escopos da fase e corrida com desconectar", () => {
-  it("refresh pede SEMPRE os escopos da M1 e grava só os concedidos dentro da fase", async () => {
+  it("refresh pede SEMPRE os escopos da fase consentida (M1) e grava só os concedidos dentro dela", async () => {
     const { store, state } = setup(0);
-    state.connections.get("c1")!.scopes = ["openid", "Calendars.Read", "Mail.Read"];
+    // M2: com Mail.Read gravado a fase consentida seria a M2 (ver tokens.m2.test.ts);
+    // aqui a conexão é só M1 e o token endpoint devolve um extra.
+    state.connections.get("c1")!.scopes = ["openid", "Calendars.Read"];
     const { fetch, calls } = okFetch({
       access_token: "AT-NEW",
       refresh_token: "RT-NEW",

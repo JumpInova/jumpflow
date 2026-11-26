@@ -44,6 +44,7 @@ describe("normalizeGraphEvent", () => {
         graphEventId: "g1",
         reason: "private",
         organizerEmail: "gestor@jump.com.br",
+        iCalUId: base.iCalUId,
       });
     }
     expect(normalizeGraphEvent({ ...base, type: "seriesMaster" })).toMatchObject({ reason: "series_master" });

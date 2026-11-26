@@ -19,7 +19,14 @@ import {
   type OAuthCookiePayload,
   type TokenSet,
 } from "./oauth";
-import { M1_SCOPES, grantedForbiddenScopes, hasCalendarScope } from "./scopes";
+import {
+  PHASE_SCOPES,
+  grantedForbiddenScopes,
+  hasCalendarScope,
+  hasMailScope,
+  isM365Phase,
+  type M365Phase,
+} from "./scopes";
 
 /**
  * Orquestração do consentimento (início e callback), sem I/O de framework:
@@ -36,6 +43,11 @@ export interface StartInput {
   redirectUri: string;
   stateSecret: string;
   nowMs?: number;
+  /**
+   * Fase a consentir (padrão M1). M2 = consentimento INCREMENTAL de `Mail.Read`
+   * ("Ativar atas por e-mail"); pede os escopos da fase inteira (M1 + Mail.Read).
+   */
+  phase?: M365Phase;
 }
 
 export interface StartOutput {
@@ -50,14 +62,15 @@ export function startM365Connect(input: StartInput): StartOutput {
   const exp = Math.floor(nowMs / 1000) + STATE_TTL_SECONDS;
   const nonce = createNonce();
   const pkce = createPkcePair();
+  const phase: M365Phase = input.phase ?? "M1";
   const state = signState({ u: input.userId, n: nonce, e: exp }, input.stateSecret);
-  const cookie: OAuthCookiePayload = { nonce, verifier: pkce.verifier, userId: input.userId, exp };
+  const cookie: OAuthCookiePayload = { nonce, verifier: pkce.verifier, userId: input.userId, exp, phase };
   return {
     authorizeUrl: buildAuthorizeUrl({
       credentials: input.credentials,
       redirectUri: input.redirectUri,
-      scopes: M1_SCOPES,
-      phase: "M1",
+      scopes: PHASE_SCOPES[phase],
+      phase,
       state,
       codeChallenge: pkce.challenge,
       loginHint: input.userEmail,
@@ -79,7 +92,9 @@ export function readOAuthCookie(value: string | undefined | null): OAuthCookiePa
     ) {
       return null;
     }
-    return parsed;
+    // Cookie sem fase (fluxo iniciado antes da M2) = M1; valor estranho = recusa.
+    if (parsed.phase !== undefined && !isM365Phase(parsed.phase)) return null;
+    return { ...parsed, phase: parsed.phase ?? "M1" };
   } catch {
     return null;
   }
@@ -107,6 +122,10 @@ export interface ConnectedAccount {
   tenantId: string;
   graphUserId: string;
   mailbox: string;
+  /** Fase pedida neste consentimento (do cookie). */
+  phase: M365Phase;
+  /** Pediu M2 mas `Mail.Read` não veio: a agenda conecta, as atas não. */
+  mailScopeMissing: boolean;
 }
 
 export interface CallbackDeps {
@@ -140,6 +159,7 @@ export async function completeM365Callback(
     return { ok: false, code: "invalid_state" };
   }
 
+  const phase: M365Phase = input.cookie.phase ?? "M1";
   let tokens: TokenSet;
   try {
     tokens = await exchangeAuthorizationCode(
@@ -148,7 +168,7 @@ export async function completeM365Callback(
         code: input.code,
         codeVerifier: input.cookie.verifier,
         redirectUri: input.redirectUri,
-        scopes: M1_SCOPES,
+        scopes: PHASE_SCOPES[phase],
       },
     );
   } catch {
@@ -178,5 +198,15 @@ export async function completeM365Callback(
   const mailbox = candidates.find((c) => c === expected);
   if (!mailbox) return { ok: false, code: "account_mismatch" };
 
-  return { ok: true, account: { tokens, tenantId: tid, graphUserId: me.id, mailbox } };
+  return {
+    ok: true,
+    account: {
+      tokens,
+      tenantId: tid,
+      graphUserId: me.id,
+      mailbox,
+      phase,
+      mailScopeMissing: phase === "M2" && !hasMailScope(tokens.scopes),
+    },
+  };
 }

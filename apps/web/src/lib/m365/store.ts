@@ -122,6 +122,12 @@ export interface M365Store {
   /** Claim atômico do lease de sync (true = esta rodada é dona). */
   claimSyncLease(id: string, owner: string, until: Date, now: Date): Promise<boolean>;
   releaseSyncLease(id: string, owner: string): Promise<void>;
+  /**
+   * Heartbeat do lease: estende `syncLeaseUntil` SÓ se esta rodada ainda é dona
+   * e a conexão segue ACTIVE. `false` = lease perdido (outra instância assumiu,
+   * desconectada ou pausada): a rodada para ANTES da próxima fase de efeitos.
+   */
+  renewSyncLease(id: string, owner: string, until: Date): Promise<boolean>;
   saveCalendarCursor(id: string, cursor: CalendarCursor | null, guard: ConnectionWriteGuard): Promise<boolean>;
   recordSyncOutcome(
     id: string,
@@ -152,9 +158,13 @@ export interface M365Store {
   /**
    * O ORGANIZADOR marcou o evento como privado/confidencial: sem Checkpoint
    * vinculado o evento é apagado; com vínculo, assunto/participantes/link são
-   * limpos (o rascunho do gestor continua).
+   * limpos (o rascunho do gestor continua) e o evento fica marcado como
+   * redigido (`redactedAt`): a partir daí só a visão do ORGANIZADOR volta a
+   * gravar assunto/participantes (um participante não reescreve o redigido).
    */
   redactCalendarEvent(calendarEventId: string): Promise<"deleted" | "redacted">;
+  /** Id do CalendarEvent por iCalUId (null se ainda não existe). */
+  findCalendarEventIdByICalUId(iCalUId: string): Promise<string | null>;
   /** Cancela o evento se nenhum sighting ativo restar; devolve se cancelou. */
   cancelIfNoActiveSighting(calendarEventId: string): Promise<boolean>;
 

@@ -8,7 +8,11 @@
  * uma string separada por espaço.
  */
 
-export type M365Phase = "M1";
+/**
+ * Fases com escopo consentido. A M2 (atas por e-mail) é a M1 + `Mail.Read`; a
+ * M3 entra na próxima rodada.
+ */
+export type M365Phase = "M1" | "M2";
 
 /** M1 — Conexão + Agenda. */
 export const M1_SCOPES = [
@@ -19,9 +23,13 @@ export const M1_SCOPES = [
   "Calendars.Read",
 ] as const;
 
-/** Escopos permitidos por fase (apenas M1 nesta entrega). */
+/** M2 — E-mail de atas: M1 + leitura de e-mail (só leitura, nunca envio). */
+export const M2_SCOPES = [...M1_SCOPES, "Mail.Read"] as const;
+
+/** Escopos permitidos por fase (cada fase inclui as anteriores). */
 export const PHASE_SCOPES: Record<M365Phase, readonly string[]> = {
   M1: M1_SCOPES,
+  M2: M2_SCOPES,
 };
 
 /** `.All` delegados explicitamente aceitos (fases futuras). */
@@ -96,6 +104,26 @@ export function assertScopesForPhase(
 /** Escopos concedidos contêm algum proibido? (app registration mal configurado). */
 export function grantedForbiddenScopes(granted: readonly string[]): string[] {
   return splitScopes(granted).filter(isForbiddenScope);
+}
+
+/** Os escopos concedidos incluem a leitura de e-mail (M2)? */
+export function hasMailScope(granted: readonly string[]): boolean {
+  return splitScopes(granted)
+    .map(normalizeScope)
+    .includes("mail.read");
+}
+
+/**
+ * Fase EFETIVAMENTE consentida a partir dos escopos gravados (já filtrados pela
+ * fase): com `Mail.Read` = M2; senão M1. O refresh pede exatamente os escopos
+ * desta fase — nunca além do que o usuário consentiu.
+ */
+export function consentedPhase(granted: readonly string[]): M365Phase {
+  return hasMailScope(granted) ? "M2" : "M1";
+}
+
+export function isM365Phase(value: unknown): value is M365Phase {
+  return value === "M1" || value === "M2";
 }
 
 /** Os escopos concedidos cobrem o necessário para ler a agenda? */

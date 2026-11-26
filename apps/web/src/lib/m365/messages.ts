@@ -14,6 +14,9 @@ export const M365_ERROR_MESSAGES = {
   forbidden_scope: "A Microsoft concedeu permissões além das necessárias. A conexão foi recusada; avise o administrador.",
   graph_unavailable: "Não foi possível consultar a sua conta na Microsoft agora. Tente de novo em instantes.",
   user_not_found: "Seu usuário não foi encontrado na plataforma.",
+  mail_scope_missing:
+    "A permissão de leitura de e-mail não foi concedida. A agenda continua conectada, mas as atas por e-mail ficam desligadas.",
+  mail_not_allowed: "As atas por e-mail são só para quem registra checkpoints (gestores).",
 } as const;
 
 export type M365ErrorCode = keyof typeof M365_ERROR_MESSAGES;

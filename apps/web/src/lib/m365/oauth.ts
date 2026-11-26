@@ -124,6 +124,8 @@ export interface OAuthCookiePayload {
   verifier: string;
   userId: string;
   exp: number;
+  /** Fase pedida no início (M1 = agenda; M2 = + atas por e-mail). */
+  phase?: M365Phase;
 }
 
 // ── authorize URL ────────────────────────────────────────────────────────────
@@ -200,6 +202,25 @@ const REAUTH_CODES = new Set([
   "login_required",
 ]);
 
+/**
+ * Código do erro do token endpoint. O Entra devolve consentimento retirado como
+ * `{"error":"invalid_grant","suberror":"consent_required"}` (às vezes só com
+ * `error_codes:[65001]` ou "AADSTS65001" na descrição): isso vira
+ * `consent_required` (escopo retirado), distinto de um `invalid_grant` real
+ * (refresh revogado). A descrição só é inspecionada, nunca logada/propagada.
+ */
+export function tokenErrorCode(json: Record<string, unknown>, status: number): string {
+  const error = typeof json.error === "string" ? json.error : `http_${status}`;
+  if (error !== "invalid_grant") return error;
+  const suberror = typeof json.suberror === "string" ? json.suberror.toLowerCase() : "";
+  const codes = Array.isArray(json.error_codes) ? json.error_codes : [];
+  const description = typeof json.error_description === "string" ? json.error_description : "";
+  if (suberror === "consent_required" || codes.includes(65001) || description.includes("AADSTS65001")) {
+    return "consent_required";
+  }
+  return error;
+}
+
 /** Lê o payload de um JWT (sem verificar assinatura — ver nota do módulo). */
 export function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split(".");
@@ -255,10 +276,7 @@ async function postToken(
   } catch {
     json = {};
   }
-  if (!res.ok) {
-    const code = typeof json.error === "string" ? json.error : `http_${res.status}`;
-    throw new OAuthTokenError(code, res.status);
-  }
+  if (!res.ok) throw new OAuthTokenError(tokenErrorCode(json, res.status), res.status);
   const accessToken = typeof json.access_token === "string" ? json.access_token : "";
   if (!accessToken) throw new OAuthTokenError("invalid_response", res.status);
   const expiresIn = Number(json.expires_in);

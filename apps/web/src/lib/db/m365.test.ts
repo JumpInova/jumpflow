@@ -18,7 +18,7 @@ const h = vi.hoisted(() => {
   const fn = () => vi.fn();
   const prismaMock = {
     m365Connection: { updateMany: fn(), update: fn(), findUnique: fn(), create: fn(), findMany: fn(), groupBy: fn() },
-    calendarEvent: { upsert: fn(), update: fn(), deleteMany: fn() },
+    calendarEvent: { upsert: fn(), update: fn(), deleteMany: fn(), findUnique: fn() },
     calendarEventSighting: { upsert: fn(), findUnique: fn(), update: fn(), findMany: fn(), updateMany: fn() },
     checkpoint: { findUnique: fn(), create: fn(), findMany: fn(), updateMany: fn(), count: fn() },
     auditEvent: { create: fn() },

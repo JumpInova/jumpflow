@@ -88,7 +88,7 @@ export async function GET(request: Request) {
     return finish(redirectToAccount(base, result));
   }
 
-  const encrypted = encryptTokenSet(result.account.tokens, null);
+  const encrypted = encryptTokenSet(result.account.tokens, null, result.account.phase);
   const saved = await upsertM365Connection({
     userId: dbUser.id,
     ...encrypted,
@@ -109,14 +109,24 @@ export async function GET(request: Request) {
     status: "SUCCESS",
     entityType: "M365Connection",
     entityId: saved.id,
-    // `scopes` grava só o concedido dentro da M1 (encryptTokenSet). Extras
-    // permitidos (já consentidos antes) só são contados aqui. Proibidos já
-    // foram recusados antes de gravar qualquer token.
+    // `scopes` grava só o concedido dentro da fase pedida (encryptTokenSet).
+    // Extras permitidos (já consentidos antes) só são contados aqui. Proibidos
+    // já foram recusados antes de gravar qualquer token.
     meta: {
       created: saved.created,
+      phase: result.account.phase,
       scopes: encrypted.scopes.length,
-      extraScopes: countExtraScopes(result.account.tokens.scopes, "M1"),
+      extraScopes: countExtraScopes(result.account.tokens.scopes, result.account.phase),
+      mailScopeMissing: result.account.mailScopeMissing,
     },
   });
-  return finish(redirectToAccount(base, { ok: true }));
+  if (result.account.mailScopeMissing) {
+    return finish(redirectToAccount(base, { ok: false, code: "mail_scope_missing" }));
+  }
+  return finish(
+    redirectToAccount(base, {
+      ok: true,
+      status: result.account.phase === "M2" ? "atas_ativadas" : "conectado",
+    }),
+  );
 }

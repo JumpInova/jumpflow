@@ -1,6 +1,13 @@
-import type { CalendarDeltaRequest, GraphClient } from "./client";
+import type { CalendarDeltaRequest, GraphClient, MessageQuery } from "./client";
 import { GraphError } from "./errors";
-import type { GraphDeltaPage, GraphEvent, GraphMe } from "./types";
+import type {
+  GraphAttachmentContent,
+  GraphDeltaPage,
+  GraphEvent,
+  GraphMe,
+  GraphMessage,
+  GraphMessageBody,
+} from "./types";
 
 /**
  * Fake em memória do {@link GraphClient} para testes (nenhuma chamada real).
@@ -13,13 +20,39 @@ import type { GraphDeltaPage, GraphEvent, GraphMe } from "./types";
  * - `expireDeltaLinks()` faz o próximo uso de um deltaLink antigo falhar com
  *   410 (`resync`), como o Graph faz quando o estado de sync expira;
  * - `failNext(error)` injeta uma falha na próxima chamada.
+ *
+ * M2 — caixa de e-mail em memória (`addMessage`): `findMessages` aplica a
+ * categoria (com janela) ou a busca por palavras do assunto, como o Graph; o
+ * corpo e os anexos só saem por `getMessageBody`/`getAttachment`. `calls.mail`
+ * registra cada consulta (para provar que a caixa do consultor nunca é lida).
  */
+export interface FakeMessage extends GraphMessage {
+  id: string;
+  body?: GraphMessageBody;
+  attachments?: Array<Omit<GraphAttachmentContent, "kind"> & { kind?: GraphAttachmentContent["kind"] }>;
+}
+
 export interface FakeGraph extends GraphClient {
   upsertEvent(event: GraphEvent): void;
   removeEvent(id: string): void;
   expireDeltaLinks(): void;
   failNext(error: GraphError): void;
-  calls: { me: number; delta: Array<"initial" | "link"> };
+  addMessage(message: FakeMessage): void;
+  calls: {
+    me: number;
+    delta: Array<"initial" | "link">;
+    mail: Array<{ op: "find" | "get" | "body" | "attachments" | "attachment"; kind?: MessageQuery["kind"]; id?: string }>;
+  };
+}
+
+function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .split(" ")
+    .filter(Boolean);
 }
 
 const FAKE_BASE = "https://graph.microsoft.com/v1.0/fake";
@@ -46,7 +79,19 @@ export function createFakeGraphClient(options: {
   let seq = 0;
   let generation = 0;
   const pending: GraphError[] = [];
-  const calls: FakeGraph["calls"] = { me: 0, delta: [] };
+  const calls: FakeGraph["calls"] = { me: 0, delta: [], mail: [] };
+  const messages = new Map<string, FakeMessage>();
+  function messageOrThrow(id: string): FakeMessage {
+    const m = messages.get(id);
+    if (!m) throw new GraphError("not_found", "Graph respondeu 404.", { status: 404, code: "ErrorItemNotFound" });
+    return m;
+  }
+  function meta(m: FakeMessage): GraphMessage {
+    const { body: _body, attachments: _attachments, ...rest } = m;
+    void _body;
+    void _attachments;
+    return { ...rest, hasAttachments: (m.attachments?.length ?? 0) > 0 };
+  }
 
   function record(id: string, removed: boolean) {
     seq += 1;
@@ -99,6 +144,62 @@ export function createFakeGraphClient(options: {
     },
     failNext(error) {
       pending.push(error);
+    },
+    addMessage(message) {
+      messages.set(message.id, message);
+    },
+    async findMessages(query) {
+      throwPending();
+      calls.mail.push({ op: "find", kind: query.kind });
+      const all = [...messages.values()];
+      if (query.kind === "category") {
+        const since = Date.parse(query.since);
+        const until = Date.parse(query.until);
+        return all
+          .filter((m) => (m.categories ?? []).some((c) => c.toLowerCase() === query.category.toLowerCase()))
+          .filter((m) => {
+            const at = Date.parse(m.receivedDateTime ?? "");
+            return at >= since && at <= until;
+          })
+          .map(meta);
+      }
+      // $search por assunto: todas as palavras do termo presentes no assunto.
+      const terms = words(query.subject);
+      return all.filter((m) => {
+        const subjectWords = new Set(words(m.subject ?? ""));
+        return terms.every((t) => subjectWords.has(t));
+      }).map(meta);
+    },
+    async getMessage(id) {
+      throwPending();
+      calls.mail.push({ op: "get", id });
+      return meta(messageOrThrow(id));
+    },
+    async getMessageBody(id) {
+      throwPending();
+      calls.mail.push({ op: "body", id });
+      return (
+        messageOrThrow(id).body ?? { contentType: "text", content: "", uniqueContentType: null, uniqueContent: null }
+      );
+    },
+    async listAttachments(id) {
+      throwPending();
+      calls.mail.push({ op: "attachments", id });
+      return (messageOrThrow(id).attachments ?? []).map((a) => ({
+        id: a.id,
+        name: a.name,
+        contentType: a.contentType,
+        size: a.size,
+        isInline: a.isInline,
+        kind: a.kind ?? "file",
+      }));
+    },
+    async getAttachment(id, attachmentId) {
+      throwPending();
+      calls.mail.push({ op: "attachment", id });
+      const a = (messageOrThrow(id).attachments ?? []).find((x) => x.id === attachmentId);
+      if (!a) throw new GraphError("not_found", "Graph respondeu 404.", { status: 404 });
+      return { ...a, kind: a.kind ?? "file" };
     },
     async getMe() {
       calls.me += 1;
