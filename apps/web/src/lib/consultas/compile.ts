@@ -167,19 +167,33 @@ function conditionSql(
   }
 }
 
+/**
+ * Colunas técnicas de escopo que a view de cada tipo de escopo precisa expor
+ * (o teste do catálogo confere contra a migration).
+ */
+export const SCOPE_COLUMNS: Record<ConsultaEntity["scope"], readonly string[]> = {
+  pessoa_projeto: ["consultant_id", "project_manager_id"],
+  pessoa_projetos: ["consultant_id", "project_manager_ids"],
+  projeto: ["project_manager_id"],
+  amplo: [],
+};
+
 /** Escopo de linha obrigatório da entidade (§4.2). Sem universo → FALSE. */
 export function scopeSql(entity: ConsultaEntity, scope: RowScope): Prisma.Sql {
   const parts: Prisma.Sql[] = [];
   if (!scope.broad) {
+    // Dado só de visão ampla no módulo de origem (ex.: Pagamentos).
+    if (entity.scope === "amplo") return Prisma.sql`FALSE`;
     if (scope.managerUserId) {
       parts.push(
         entity.scope === "pessoa_projetos"
           ? Prisma.sql`${scope.managerUserId} = ANY(${ident("project_manager_ids")})`
           : Prisma.sql`${ident("project_manager_id")} = ${scope.managerUserId}`,
       );
-    } else if (scope.ownConsultantId) {
+    } else if (scope.ownConsultantId && entity.scope !== "projeto") {
       parts.push(Prisma.sql`${ident("consultant_id")} = ${scope.ownConsultantId}`);
     } else {
+      // Sem universo, ou "próprio consultor" numa linha que não é de pessoa.
       return Prisma.sql`FALSE`;
     }
   }

@@ -833,6 +833,10 @@ model User {
   // apenas desvincula quem registrou.
   coeMembersAdded             CoeMember[]                 @relation("CoeMemberAddedBy")
   coeSquadsCreated            CoeSquad[]                  @relation("CoeSquadCreatedBy")
+  // Consultas (docs/consultas, C2): visoes salvas e paineis do usuario. Somem
+  // com o dono (Cascade) — nao ha transferencia de propriedade.
+  consultaViewsOwned          ConsultaView[]              @relation("ConsultaViewOwner")
+  consultaPanelsOwned         ConsultaPanel[]             @relation("ConsultaPanelOwner")
   createdAt                   DateTime                    @default(now())
   updatedAt                   DateTime                    @updatedAt
 }
@@ -3805,4 +3809,63 @@ model InboundEmail {
 
   @@index([referenceType, referenceId])
   @@index([threadId])
+}
+
+/// Consultas (docs/consultas/ESPECIFICACAO.md §6 C2): forma de exibir uma visao.
+enum ConsultaVisualization {
+  TABLE
+  BAR
+  LINE
+  PIE
+  INDICATOR
+}
+
+/// Consultas: com quem a visao/painel e compartilhado. PRIVATE = so o dono;
+/// ROLES = papeis em sharedRoles; ALL = todos com acesso ao modulo Consultas.
+/// Compartilhar (ROLES/ALL) exige CONSULTAS_COMPARTILHAR. Quem abre SEMPRE
+/// executa com a propria permissao (entidade, campos e escopo de linha).
+enum ConsultaSharing {
+  PRIVATE
+  ROLES
+  ALL
+}
+
+/// Visao salva de Consultas: uma ConsultaSpec (AST validada no servidor) +
+/// forma de exibicao. `entity` duplica spec.entity para filtrar a listagem
+/// pelo acesso de quem ve sem abrir o JSON.
+model ConsultaView {
+  id            String                @id @default(cuid())
+  ownerId       String
+  owner         User                  @relation("ConsultaViewOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  entity        String
+  spec          Json
+  visualization ConsultaVisualization @default(TABLE)
+  sharing       ConsultaSharing       @default(PRIVATE)
+  sharedRoles   RoleName[]            @default([])
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([ownerId])
+  @@index([sharing])
+}
+
+/// Painel de Consultas: ate 24 referencias a visoes (`items` = [{ viewId,
+/// size }]). Ao renderizar, o acesso a CADA visao e revalidado para quem ve —
+/// visao privada de outro dono ou de entidade sem acesso nao aparece (nem o nome).
+model ConsultaPanel {
+  id          String          @id @default(cuid())
+  ownerId     String
+  owner       User            @relation("ConsultaPanelOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  items       Json
+  sharing     ConsultaSharing @default(PRIVATE)
+  sharedRoles RoleName[]      @default([])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([ownerId])
+  @@index([sharing])
 }

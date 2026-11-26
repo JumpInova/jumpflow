@@ -30,6 +30,9 @@ export interface ValidatedConsulta {
   usesSensitive: boolean;
 }
 
+/** Forma de código aceita em listas abertas (`openOptions`), ex.: valores legados. */
+const OPEN_OPTION_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 function invalid(message: string): never {
   throw new ConsultaError("INVALID", message);
 }
@@ -59,7 +62,10 @@ function checkScalar(field: ConsultaField, value: Value): void {
     case "lista":
       if (
         typeof value !== "string" ||
-        !field.options?.some((option) => option.value === value)
+        !(
+          field.options?.some((option) => option.value === value) ||
+          (field.openOptions && OPEN_OPTION_RE.test(value))
+        )
       ) {
         invalid(`Valor inválido para “${field.label}”.`);
       }

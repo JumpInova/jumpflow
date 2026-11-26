@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { FileSpreadsheet, FileText, Play, Plus, RotateCcw, X } from "lucide-react";
+import { BookmarkPlus, FileSpreadsheet, FileText, Play, Plus, RotateCcw, X } from "lucide-react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { SectionPanel } from "@/components/ui/SectionPanel";
 import { executarConsulta } from "@/app/app/consultas/actions";
@@ -25,6 +25,7 @@ import { focusRing } from "@/lib/styles";
 import { cn } from "@/lib/utils";
 import { ConsultaResultView } from "./ConsultaResultView";
 import { controlClass, FilterEditor, iconButtonClass } from "./FilterEditor";
+import { SaveViewDialog, type EditingView } from "./SaveViewDialog";
 
 const EXPORT_ENDPOINT = "/api/consultas/exportar";
 
@@ -64,6 +65,10 @@ export interface ConsultaBuilderProps {
   canExport: boolean;
   demo: boolean;
   initial?: ConsultaSpec;
+  /** `CONSULTAS_COMPARTILHAR` (o servidor revalida ao salvar). */
+  canShare?: boolean;
+  /** Visão do próprio usuário aberta para edição (`?visao=`). */
+  editing?: EditingView;
 }
 
 /**
@@ -71,7 +76,14 @@ export interface ConsultaBuilderProps {
  * colunas ou agrupamento (≤ 2, com granularidade de data), medidas e
  * ordenação. Só monta a spec — o servidor valida, aplica escopo e executa.
  */
-export function ConsultaBuilder({ entities, canExport, demo, initial }: ConsultaBuilderProps) {
+export function ConsultaBuilder({
+  entities,
+  canExport,
+  demo,
+  initial,
+  canShare = false,
+  editing,
+}: ConsultaBuilderProps) {
   const firstEntity =
     entities.find((entity) => entity.key === initial?.entity) ?? entities[0];
   const [spec, setSpec] = useState<ConsultaSpec>(() =>
@@ -81,6 +93,7 @@ export function ConsultaBuilder({ entities, canExport, demo, initial }: Consulta
   const [lastRun, setLastRun] = useState<ConsultaSpec | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<"xlsx" | "csv" | null>(null);
+  const [saving, setSaving] = useState(false);
   const [pending, startTransition] = useTransition();
 
   const entity = entities.find((e) => e.key === spec.entity) ?? firstEntity;
@@ -479,6 +492,22 @@ export function ConsultaBuilder({ entities, canExport, demo, initial }: Consulta
             <ActionButton
               type="button"
               variant="secondary"
+              icon={BookmarkPlus}
+              disabled={demo}
+              onClick={() => {
+                const incomplete = incompleteFilterMessage(entity, spec);
+                if (incomplete) {
+                  setError(incomplete);
+                  return;
+                }
+                setSaving(true);
+              }}
+            >
+              {editing ? "Salvar visão…" : "Salvar como visão"}
+            </ActionButton>
+            <ActionButton
+              type="button"
+              variant="secondary"
               icon={RotateCcw}
               onClick={() => {
                 setSpec(initialSpec(entity));
@@ -496,6 +525,16 @@ export function ConsultaBuilder({ entities, canExport, demo, initial }: Consulta
           ) : null}
         </form>
       </SectionPanel>
+
+      {saving ? (
+        <SaveViewDialog
+          open={saving}
+          onClose={() => setSaving(false)}
+          spec={spec}
+          canShare={canShare}
+          editing={editing}
+        />
+      ) : null}
 
       <SectionPanel
         title="Resultado"

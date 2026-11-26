@@ -55,11 +55,16 @@ export type ConsultaSpec = {
 /**
  * Como o escopo de linha (seção 4.2) é aplicado à view:
  * - `pessoa_projeto`: a view tem `consultant_id` e `project_manager_id`
- *   (uma linha por lançamento/alocação);
+ *   (uma linha por lançamento/alocação/despesa/decisão);
  * - `pessoa_projetos`: a view tem `consultant_id` e `project_manager_ids`
- *   (array dos gestores dos projetos em que a pessoa está/esteve alocada).
+ *   (array dos gestores dos projetos em que a pessoa está/esteve alocada);
+ * - `projeto`: a linha é do projeto (sem consultor). A view tem
+ *   `project_manager_id`; PM vê os próprios projetos e o escopo "próprio
+ *   consultor" não alcança nenhuma linha (FALSE);
+ * - `amplo`: dado que o módulo de origem só mostra a quem tem visão ampla
+ *   (ex.: Pagamentos). Fora do escopo amplo dos Relatórios → FALSE.
  */
-export type ScopeKind = "pessoa_projeto" | "pessoa_projetos";
+export type ScopeKind = "pessoa_projeto" | "pessoa_projetos" | "projeto" | "amplo";
 
 export type ConsultaField = {
   key: string;
@@ -71,6 +76,12 @@ export type ConsultaField = {
   source: string;
   example?: string;
   options?: { value: string; label: string }[];
+  /**
+   * Lista "aberta": além das `options`, aceita códigos fora da lista (ex.:
+   * valores legados de `TimeEntry.activityType`) desde que tenham forma de
+   * código (`[A-Z0-9_]`). O construtor só oferece as `options`.
+   */
+  openOptions?: boolean;
   aggregations?: Aggregation[];
   groupable?: boolean;
   sensitivity: Sensitivity;
@@ -89,6 +100,11 @@ export type ConsultaMetric = {
   label: string;
   formula: string;
   description: string;
+  /**
+   * Mesma régua dos campos (§4.3): métrica `financeiro` só aparece para quem
+   * vê campos financeiros; some do catálogo entregue ao cliente e à IA.
+   */
+  sensitivity: Sensitivity;
 };
 
 export type ConsultaEntity = {

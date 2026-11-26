@@ -15,7 +15,7 @@ Também não contam como regressão.
 | Fase | Status | Veredito |
 |---|---|---|
 | C1 | concluída (commit no branch) | APROVADO COM RESSALVAS — menores 1, 2 e 4 entram no início da C2 |
-| C2 | pendente | — |
+| C2 | concluída (commit no branch) | APROVADO COM RESSALVAS — menores 1–4 entram no início da C3 |
 | C3 | pendente | — |
 
 ## Fase C1 — dev
@@ -157,3 +157,263 @@ APROVADO COM RESSALVAS (2026-11-26). Nenhum bloqueante/importante. Menores a tra
 3. (resolvido pelo orquestrador) decisões 5 e 6 incluídas na §1 da especificação.
 4. Horas aprovadas em Alocações só somam lançamentos com `allocationId` — explicitar na descrição.
 5. Observar desempenho de `::date` sobre as views em produção.
+
+## Fase C2 — dev
+
+### Ressalvas da C1 tratadas primeiro
+1. **Métricas por sensibilidade.** `ConsultaMetric.sensitivity` é obrigatório. `visibleCatalog` filtra as métricas pela mesma régua dos campos (`canSeeSensitivity`), então "Receita", "Receita faturada" e "Consumo do orçamento" somem do catálogo sem finanças, inclusive para a IA da C3.
+2. **Atividade legada.** As opções agora são o catálogo atual mais `DEPRECATED_ACTIVITY_LABELS`, com o rótulo "(legado)". O campo tem `openOptions: true`: aceita, em eq/in, um código fora da lista desde que tenha forma de código (`^[A-Z][A-Z0-9_]{0,63}$`). As demais listas continuam fechadas.
+3. **Horas aprovadas em Alocações.** A descrição e a origem agora dizem que só entram os lançamentos vinculados à alocação (`TimeEntry.allocationId`). Para o total do projeto, a orientação é usar Horas agrupado por projeto.
+
+### Arquivos
+Criados:
+- `packages/database/prisma/migrations/20261128100000_consultas_abrangencia_visoes/migration.sql`:
+  - enums `ConsultaVisualization` e `ConsultaSharing`;
+  - tabelas `ConsultaView` e `ConsultaPanel` (geradas por `prisma migrate diff`);
+  - 8 views: `consulta_projetos`, `consulta_aprovacoes`, `consulta_despesas`, `consulta_faturamento`, `consulta_pagamentos`, `consulta_skills`, `consulta_certificados` e `consulta_ausencias`.
+- `apps/web/src/lib/consultas/saved.ts`: regras puras (Zod de visão/painel, `canOpenShared`, `canOpenView`, `specUsableBy`, `sharingAllowed`, `parsePanelItems`).
+- `apps/web/src/lib/consultas/chart.ts`: dados de gráfico puros (disponibilidade, categorias × séries, pizza com "Outros", `niceMax`, `pieArcs`).
+- `apps/web/src/lib/db/consultas-saved.ts`: CRUD, listagem, execução e exportação de visões; painéis; auditoria.
+- `apps/web/src/app/app/consultas/visoes/actions.ts`: `executarVisao`, `salvarVisao`, `atualizarVisao`, `excluirVisao`, `salvarPainel`, `atualizarPainel`, `excluirPainel`.
+- Páginas:
+  - `app/app/consultas/visoes/page.tsx`;
+  - `app/app/consultas/visoes/[id]/page.tsx`;
+  - `app/app/consultas/paineis/page.tsx`;
+  - `app/app/consultas/paineis/novo/page.tsx`;
+  - `app/app/consultas/paineis/[id]/page.tsx`;
+  - `app/app/consultas/paineis/[id]/editar/page.tsx`;
+  - `app/app/consultas/paineis/view-options.ts`.
+- `apps/web/src/app/api/consultas/visoes/[id]/exportar/route.ts` (GET `?formato=xlsx|csv`) e `app/api/consultas/export-file.ts` (arquivo XLSX/CSV comum às duas rotas).
+- Componentes em `components/consultas/`: `ConsultaChart`, `SavedViewRunner`, `SaveViewDialog`, `ViewForm`, `SharingFields`, `ViewOwnerPanel`, `PanelForm`, `SavedItemList`, `ConsultasNav`.
+- Testes:
+  - `lib/consultas/saved.test.ts`;
+  - `lib/consultas/chart.test.ts`;
+  - `lib/consultas/c2.test.ts`;
+  - `lib/db/consultas-saved.test.ts`;
+  - `app/api/consultas/visoes/[id]/exportar/route.test.ts`;
+  - `components/consultas/SavedViewRunner.test.tsx`.
+
+Alterados:
+- `schema.prisma`: modelos, enums e relações em `User`.
+- `lib/consultas/`: `types.ts`, `catalog.ts` (8 entidades novas), `access.ts` (`share`, filtro de métricas), `compile.ts` (escopos `projeto`/`amplo` e `SCOPE_COLUMNS`), `validate.ts` (`openOptions`), `errors.ts` (`NOT_FOUND` → 404).
+- `lib/db/consultas.ts`: `runConsulta` e `exportConsulta` recebem `origin`, `meta.viewId` e contexto já carregado.
+- `app/api/consultas/exportar/route.ts`: usa `export-file.ts`.
+- Páginas `consultas/page.tsx` (abas; sem CRIAR redireciona para Visões; `?visao=` edita a própria visão) e `catalogo/page.tsx` (abas).
+- `ConsultaBuilder.tsx`: botão "Salvar como visão".
+- Testes ajustados:
+  - `catalog.test.ts`: colunas de escopo vêm de `SCOPE_COLUMNS`;
+  - `security.test.ts`: escopos `projeto`/`amplo` fecham em FALSE quando devem; entidades irmãs dividem o mesmo code;
+  - `ConsultaBuilder.test.tsx`: mock das actions de visões e teste de "Salvar como visão".
+
+### Decisões
+- **Escopo de linha por entidade.** Reusa integralmente `resolveReportScope`; cada entidade declara como o escopo se aplica:
+  - `pessoa_projeto`: Aprovações e Despesas. Despesas segue o mesmo recorte de `buildExpensesWhere` dos Relatórios.
+  - `pessoa_projetos`: Skills, Certificados e Ausências. O PM vê as pessoas alocadas nos seus projetos, com a mesma regra de `consulta_consultores`.
+  - `projeto`: Projetos e Faturamento. O PM vê os próprios projetos; "próprio consultor" → FALSE.
+  - `amplo`: Pagamentos. A tela de origem é só de FINANCIAL_ROLES/People; fora do escopo amplo → FALSE.
+- **Projetos.** `horas_lancadas` é `financeRestricted`, como em Alocações. `horas_orcadas`, `consumo_orcamento` e `valor_hora_padrao` são `financeiro` (FINANCIAL_ROLES protege "budget" e valor-hora).
+- **Faturamento** (pré-fatura/receita = `RevenueClosing`): só valores de venda (bruto, ajuste, total), marcados `financeiro`, mais a NFS-e mais recente (emitida tem prioridade). Sem custo nem margem.
+- **Pagamentos** (decisão conservadora):
+  - entram só PJ e CLT FLEX, igual à tela; a linha é o pagamento do mês;
+  - entram etapa, datas do fluxo, `totalAmount` e `invoiceAmount` (não cifrados e visíveis ao Financeiro na tela), como `financeiro`;
+  - ficaram de fora: `ConsultantPaymentLine` (valor/hora = custo, só Dados Sensíveis), `cltNetAmount`, `pjAmount`, `benefitAmount`, os valores acordados e as remunerações pontuais (cifrados).
+- **Aprovações.** Uma linha por decisão (`Approval`), resolvendo consultor e projeto dos 5 tipos. O comentário de decisão de ausência é omitido, porque pode citar saúde.
+- **Ausências e Despesas.** Ficam fora `note`, `decisionComment` e os endereços de milhagem.
+- **Skills/Certificados.** São duas entidades sob o mesmo código `CONSULTAS_SKILLS`.
+- **Visões salvas.**
+  - Visualização gravada em enum EN (`TABLE/BAR/LINE/PIE/INDICATOR`), com rótulos PT na UI.
+  - `entity` é duplicada da spec para filtrar a listagem.
+  - A spec é gravada normalizada, depois de validada com a permissão do dono.
+  - Criar exige CRIAR; ROLES/ALL exige COMPARTILHAR (tornar privada não exige).
+  - Alterar e excluir são só do dono. Não há override por papel global: nem ADMIN abre visão privada alheia.
+  - Abrir exige compartilhamento + `CONSULTAS` + entidade + spec válida para quem vê. Fora disso, NOT_FOUND, sem distinguir de "não existe".
+  - O dono vê a própria visão como "indisponível" quando perde um campo, para poder excluí-la. Se perder a entidade, ela some.
+- **Execução e exportação.** `runSavedView`/`exportSavedView` leem a spec do banco e chamam `runConsulta`/`exportConsulta(..., "saved_view")` com o contexto de quem vê. O cliente só manda o id. A auditoria sensível e a de exportação levam `origin` e `viewId`.
+- **Painéis.**
+  - `items` = `[{ viewId, size: normal|largo }]`, até 24, sem repetição.
+  - Ao renderizar, cada visão é revalidada para quem vê; as inacessíveis entram só em `hiddenCount` (sem nome nem id).
+  - Criar e editar exigem que toda visão nova esteja aberta para o dono. Itens já gravados são preservados.
+  - Cada cartão executa a própria visão via server action, com estados de carregando/erro próprios.
+- **Auditoria** (`entityType` `ConsultaView`/`ConsultaPanel`):
+  - `CONSULTA_VISAO_CRIADA/ATUALIZADA/COMPARTILHADA/EXCLUIDA`;
+  - `CONSULTA_PAINEL_CRIADO/ATUALIZADO/COMPARTILHADO/EXCLUIDO`;
+  - o compartilhamento registra o antes e o depois.
+- **Gráficos.**
+  - Não há lib de gráficos instalada: SVG puro, no padrão de `RadarChart`/`AvailabilityHeatmap`. Nenhuma dependência nova.
+  - Barras: até 30 grupos e 3 séries, com suporte a negativos. Linhas: data em ordem cronológica. Pizza: rosca com 8 fatias + "Outros". Indicador: cartões de KPI, com borda/sombra só nesse elemento de alto valor.
+  - Cores de preenchimento vêm dos acentos do design system; texto com tons AA.
+  - Cada gráfico tem tabela `sr-only` equivalente e `<title>` por marca. Sem animação.
+  - Gráfico indisponível explica o motivo (ex.: consulta sem agrupamento).
+- **PGlite (só no scratchpad, nada contra `DATABASE_URL`).**
+  - Montagem: schema completo via `prisma migrate diff --from-empty`, views da C1 e da C2, e seed cobrindo todas as tabelas.
+  - Execução: **2.982 SQLs gerados pelo compilador** (todas as entidades × campos × operadores × 5 escopos, agrupamentos com até 12 medidas e todos os exemplos), **0 falhas**; nenhum `WHERE (FALSE)` trouxe linhas.
+  - Valores conferidos:
+    - NF emitida prevalece sobre a que falhou;
+    - CLT fora de Pagamentos;
+    - comentário de ausência nulo;
+    - `consumo_orcamento` correto;
+    - `project_manager_ids` preenchido.
+
+### Critérios de aceite (C2)
+- [x] Entidades Projetos, Aprovações, Despesas, Faturamento (sem custo/margem), Pagamentos (sem custo cifrado), Skills, Certificados e Ausências, cada uma com o seu código da matriz e escopo de linha.
+- [x] Visões salvas (modelo próprio com dono, nome, descrição, spec, visualização, compartilhamento PRIVATE/ROLES/ALL, papéis, timestamps); compartilhar exige `CONSULTAS_COMPARTILHAR`; sempre roda com a permissão de quem vê; entidade sem acesso → não aparece.
+- [x] Exportação de visão salva por `exportConsulta(..., "saved_view")` com a spec carregada no servidor; exige EXPORTAR, não CRIAR.
+- [x] Painéis (≤ 24) com revalidação por visão para quem vê; visão privada/inacessível não aparece nem com nome.
+- [x] Gráficos (barras, linhas, pizza, indicador) conforme o design system, sem lib nova.
+- [x] Auditoria de criar/compartilhar/excluir (e alterar) visões e painéis.
+- [x] Ressalvas 1, 2 e 4 da C1.
+
+### Validação local
+- **vitest** (arquivos da fase + alinhamento da matriz): 1.614/1.614, em 19 arquivos.
+- **Suíte completa:** 15 falhas em 8 arquivos, idênticas ao baseline.
+- **tsc:** só os 10 erros pré-existentes de `inbound.test.ts`.
+- **eslint:** limpo.
+- **Prisma:** `prisma validate` ok; `npm run db:generate` ok.
+
+### Pendências e riscos
+- **Migration:** precisa rodar no deploy (tabelas + 8 views).
+- **Desempenho:**
+  - `consulta_projetos` soma horas por LATERAL por projeto;
+  - `consulta_aprovacoes` faz 5 LEFT JOINs polimórficos (usam as PKs);
+  - o timeout de 15s protege; observar em produção.
+- **Painel com muitos cartões:** as server actions do Next são enfileiradas por cliente, então 24 cartões carregam em sequência. Se ficar lento, a alternativa é um endpoint de lote.
+- **Exportação de visão:** usa link GET com `download`. Um erro (403/404) abre a resposta em texto; o link só aparece quando há EXPORTAR e a visão está disponível.
+- **Itens órfãos:** visão excluída continua referenciada nos painéis alheios e entra na contagem de itens indisponíveis. A limpeza fica para o dono ao editar.
+- **Faturamento por cliente:** fechamento sem projeto (`projectId` nulo) não aparece para o PM (`project_manager_id` nulo). É coerente com o escopo, mas vale registrar.
+- **Pagamentos:** se o Financeiro decidir que o total mensal também é custo sensível, basta mudar `valor_total`/`valor_nf` para `custo_sensivel` no catálogo; a view não muda.
+
+## Fase C2 — testes
+
+### Testes criados (133 casos, 5 arquivos; nenhum código de produção alterado)
+- `apps/web/src/lib/consultas/c2-security.test.ts` (59):
+  - escopo de linha das 8 entidades novas (PM, próprio consultor, sem universo, amplo, PM+consultor);
+  - filtro OU com valor malicioso nunca escapa: `WHERE (escopo) AND ((a) OR (b))` em linhas, contagem e totais;
+  - colunas técnicas de escopo não são filtráveis;
+  - sem custo cifrado nem dado pessoal: Pagamentos (sem valor-hora, cltNet, pjAmount, benefícios, acordado, banco), Ausências (sem comentário/observação/motivo), Despesas (sem endereços);
+  - métricas por sensibilidade;
+  - Atividade legada: aceita código e o parametriza; recusa 12 formas de lixo; limite de 64; só `horas.atividade` é lista aberta;
+  - regras puras: `canOpenShared`, `canOpenView`, `specUsableBy` (campo financeiro só no filtro), `sharingAllowed`, schemas `.strict()`, ≤ 24, `parsePanelItems`.
+- `apps/web/src/lib/db/consultas-saved.security.test.ts` (39):
+  - 404 com o mesmo código e a mesma mensagem de "não existe", em 6 cenários: privada alheia, ROLES de outro papel, ALL com campo financeiro (em coluna ou só no filtro), entidade sem acesso, spec adulterada. Em todos, sem executar e sem auditar;
+  - ADMIN não abre, não exporta, não altera e não exclui visão privada alheia;
+  - não-dono recebe NOT_FOUND, não FORBIDDEN;
+  - `userId` nulo nunca é dono;
+  - visão do Financeiro aberta pelo PM:
+    - campo financeiro → NOT_FOUND;
+    - sem campo financeiro → roda com `project_manager_id = db-pm`;
+    - Pagamentos com o code → `FALSE`;
+  - exportação:
+    - exige EXPORTAR e não exige CRIAR;
+    - sem permissão, não roda consulta nem audita;
+    - auditoria com `origin: saved_view` e o `viewId` do banco;
+  - ao criar/editar:
+    - entidade e dono nunca vêm do cliente;
+    - sem COMPARTILHAR, ROLES e ALL são recusados;
+    - papel inexistente é recusado;
+    - injeção na spec ao criar é recusada;
+    - dono sem CRIAR não troca a spec;
+    - auditoria do antes e do depois do compartilhamento;
+  - painéis:
+    - painel ROLES de outro papel e painel sem módulo não abrem;
+    - listagem sem painel privado alheio;
+    - a mesma visão aparece para o Financeiro e fica oculta para o PM;
+    - visão do próprio dono que ficou indisponível entra só na contagem;
+    - JSON com 40 itens consulta só 24;
+    - criar exige CRIAR, e compartilhar exige COMPARTILHAR;
+    - painel com exatamente 24 itens é aceito;
+    - id adivinhado → INVALID, sem citar o nome;
+    - ao editar: não-dono recebe NOT_FOUND, item novo inacessível → INVALID, item antigo é preservado;
+    - exclusão auditada.
+- `apps/web/src/app/app/consultas/visoes/actions.test.ts` (24):
+  - `executarVisao` ignora spec e origem extras;
+  - 9 ids inválidos são barrados antes da camada de dados, em todas as actions com id;
+  - erro inesperado → FAILED, sem detalhe.
+- `apps/web/src/components/consultas/ConsultaChart.test.tsx` (8): tabela `sr-only` equivalente.
+  - Barras, linhas e pizza: figura nomeada, SVG `aria-hidden` e todos os valores na tabela.
+  - Pizza: "Outros" com a soma do restante.
+  - Barras com mais de 30 grupos: aviso de grupos omitidos.
+  - Indicador em `dl`/`dt`/`dd`.
+  - Indisponibilidade explicada em texto.
+- `apps/web/src/app/api/consultas/visoes/[id]/exportar/route.origin.test.ts` (3):
+  - `origin`, `spec`, `entity` e `viewId` na query não chegam a `exportSavedView`;
+  - formato fora do enum → 400;
+  - 404 sem nome e sem anexo.
+
+### Resultado
+- **Vitest (suíte inteira):** 4.976 passaram, 15 falharam, 1 skip (4.992 em 307 arquivos). As 15 falhas em 8 arquivos são exatamente as do baseline (`next-auth` → `next/server`). Os arquivos novos passam 133/133.
+- **tsc (`tsconfig.test.json`):** só os 10 erros pré-existentes de `inbound.test.ts`.
+- **eslint:** limpo nos testes novos e nos arquivos da fase.
+
+### Bugs encontrados
+- **Bloqueante:** nenhum.
+- **Importante:** nenhum.
+- **Menor:**
+  1. **`lib/db/consultas-saved.ts:577`.** `ownerItems` devolve ao dono do painel (tela `paineis/[id]/editar` → `PanelForm`, no cliente) os ids de TODOS os itens gravados, inclusive de visões que hoje ele não pode abrir (por exemplo, visão de outro dono que virou PRIVATE). Vaza só o id, que o dono já conhecia; nome e spec não saem.
+     - Esperado pelo critério: nenhum id de visão inacessível.
+     - Obtido: o id chega ao cliente.
+  2. **`lib/db/consultas-saved.ts:433` e `:501`.** `updateSavedView`/`deleteSavedView` checam só `isOwner`. O dono que perdeu a ENTIDADE (a visão some da lista dele) ainda consegue, pelo id, renomear a visão e recompartilhá-la como ALL. Não há vazamento de dados: quem abre roda com a própria permissão. Mas contraria "entidade sem acesso → não aparece".
+     - Esperado: NOT_FOUND.
+     - Obtido: a alteração é gravada.
+  3. **Painéis, `:667`.** `updatePanel` não exige CONSULTAS_CRIAR, e `createPanel` exige. A visão segue a mesma linha (metadados sem CRIAR). Falta confirmar se é intencional.
+- **Observação (não é bug):**
+  - `ConsultaChart.tsx:333`: no cartão compacto do painel, o aviso "veja a tabela" não tem tabela visível no cartão. A tabela `sr-only` cobre só os 30 grupos desenhados.
+  - `despesas.valor` é `publico` por decisão; a entidade é ADMIN/FINANCE.
+
+### Cobertura dos critérios C2
+- [x] As 8 entidades com code e escopo, inclusive escape por OU; sem custo cifrado nem dado pessoal.
+- [x] Visões:
+  - PRIVATE / ROLES / ALL;
+  - 404 indistinguível, até para ADMIN;
+  - COMPARTILHAR;
+  - só o dono altera (ressalva no menor 2);
+  - spec só do banco;
+  - permissão e escopo de quem vê.
+- [x] Exportação de visão: EXPORTAR sem CRIAR, `saved_view` fora do controle do cliente, auditoria com `viewId`.
+- [x] Painéis:
+  - ≤ 24;
+  - revalidação por visão e por quem vê;
+  - sem nome nem id para quem vê (ressalva no menor 1, só para o dono);
+  - auditoria.
+- [x] Gráficos com tabela acessível equivalente.
+- [x] Ressalvas 1 e 2 da C1 (métricas por sensibilidade; Atividade legada aceita código e recusa lixo).
+
+## Fase C2 — correções
+
+1. **Painel em edição não envia ids de visões inacessíveis** (`getPanelForViewer` e `updatePanel`).
+   - `ownerItems` agora traz só as visões que o dono abre hoje. As demais (excluídas, privadas alheias, de entidade ou campo sem acesso) chegam ao cliente apenas como contagem (`hiddenCount`).
+   - O `PanelForm` mostra "N visões deste painel não estão disponíveis para você" e oferece a caixa "Remover as N visões indisponíveis".
+   - **Decisão: o padrão é manter.** As indisponíveis vão para o fim do painel, e o dono pode removê-las em bloco (`keepUnavailable: false`). Motivo: a indisponibilidade pode ser só para o dono, e outros que veem o painel ainda podem abri-las.
+   - O servidor calcula as indisponíveis por conta própria. Todo item enviado pelo cliente precisa estar aberto para o dono; reenviar o id de uma indisponível → INVALID.
+   - O teto de 24 conta também as mantidas.
+   - A auditoria registra `unavailableKept` e `unavailableRemoved`.
+2. **Alterar ou recompartilhar visão exige acesso atual do dono.** `updateSavedView` usa a mesma regra de abertura: `CONSULTAS`, entidade liberada e spec válida para o dono. Sem isso, devolve o mesmo NOT_FOUND de "não existe". **Excluir** continua liberado ao dono sem esse acesso, para limpeza.
+3. **Editar painel exige `CONSULTAS_CRIAR`**, como criar (FORBIDDEN sem ele).
+4. **Aviso de grupos omitidos no gráfico.**
+   - No cartão compacto do painel, que não tem tabela visível, o aviso agora diz "abra a visão para ver todos ou exporte".
+   - Na página da visão, onde há tabela logo abaixo, diz "veja a tabela abaixo ou exporte".
+
+Arquivos:
+- `lib/db/consultas-saved.ts`: helper `unavailableItems`, `checkPanelItems` sem a exceção `keep`, `SavePanelInput.keepUnavailable`.
+- `app/app/consultas/visoes/actions.ts`: `PainelForm.keepUnavailable`.
+- `components/consultas/PanelForm.tsx` e `app/app/consultas/paineis/[id]/editar/page.tsx` (`unavailableCount`).
+- `components/consultas/ConsultaChart.tsx`.
+
+Testes:
+- `consultas-saved.security.test.ts`:
+  - ajustado o caso "item já gravado é preservado" para a nova regra (manter no fim ou remover em bloco; reenviar id inacessível → INVALID);
+  - novos casos: editar painel sem CRIAR → FORBIDDEN; `ownerItems` sem ids nem nomes inacessíveis; dono sem a entidade ou com spec inválida → 404 ao alterar, mas exclui.
+- `ConsultaChart.test.tsx`: aviso do modo compacto vs. página.
+
+Validação:
+- **vitest** (fase + alinhamento da matriz): 1.751/1.751, em 24 arquivos.
+- **tsc:** só os 10 erros pré-existentes.
+- **eslint:** limpo.
+
+## Fase C2 — veredito do validador
+
+APROVADO COM RESSALVAS (2026-11-26). Nenhum bloqueante/importante. Menores a tratar no início da C3:
+1. Datas de timestamps convertidas em UTC (`::date`) em vez de São Paulo: C2 migration :110, :147, :307 e C1 migration :237 — corrigir nas próprias migrations (ainda não aplicadas).
+2. Regra única de edição: painel exige CRIAR, visão não — unificar e esconder/bloquear edição na UI sem CRIAR.
+3. `LIST_LIMIT` aplicado antes do filtro por entidade — filtrar `entity IN (liberadas)` no where.
+4. `horas_ate_decisao` pode ser negativo — GREATEST(...,0) ou null.
+5. Observar desempenho de consulta_projetos / consulta_aprovacoes em produção.

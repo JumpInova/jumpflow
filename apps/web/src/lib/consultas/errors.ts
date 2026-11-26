@@ -5,6 +5,7 @@
 export type ConsultaErrorCode =
   | "INVALID"
   | "FORBIDDEN"
+  | "NOT_FOUND"
   | "TIMEOUT"
   | "NO_DATABASE"
   | "FAILED";
@@ -12,6 +13,8 @@ export type ConsultaErrorCode =
 export const CONSULTA_ERROR_STATUS: Record<ConsultaErrorCode, number> = {
   INVALID: 400,
   FORBIDDEN: 403,
+  /** Visão/painel inexistente OU sem acesso (não distingue, para não vazar). */
+  NOT_FOUND: 404,
   TIMEOUT: 504,
   NO_DATABASE: 503,
   FAILED: 500,

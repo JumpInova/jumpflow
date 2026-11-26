@@ -210,10 +210,16 @@ describe("escopo de linha: sempre o 1º termo do WHERE, em todas as consultas ge
       expect(sql.text).toContain(`WHERE (${scopeText}) AND ((`);
       // Um único WHERE: nada é concatenado depois que poderia anular o escopo.
       expect(sql.text.match(/WHERE/g)).toHaveLength(1);
-      if (scope.managerUserId) expect(sql.values[0]).toBe("pm-1");
-      if (scope.ownConsultantId) expect(sql.values[0]).toBe("c-1");
-      if (!scope.broad && !scope.managerUserId && !scope.ownConsultantId) {
+      // `amplo`: fora do escopo amplo nada aparece; `projeto`: o escopo
+      // "próprio consultor" não alcança linha de projeto.
+      const closed =
+        (!scope.broad && entity.scope === "amplo") ||
+        (!scope.broad && !scope.managerUserId && (!scope.ownConsultantId || entity.scope === "projeto"));
+      if (closed) {
         expect(sql.text).toContain("WHERE (FALSE) AND");
+      } else {
+        if (scope.managerUserId) expect(sql.values[0]).toBe("pm-1");
+        if (scope.ownConsultantId) expect(sql.values[0]).toBe("c-1");
       }
     }
   });
@@ -311,7 +317,10 @@ describe("permissão de entidade e módulo", () => {
 
   it("cada entidade exige o próprio code (code de outra entidade não serve)", () => {
     for (const entity of CONSULTA_ENTITIES) {
-      const others = CONSULTA_ENTITIES.filter((e) => e.key !== entity.key).map((e) => e.permissionCode);
+      // Entidades irmãs (ex.: Skills e Certificados) dividem o mesmo code.
+      const others = CONSULTA_ENTITIES.filter((e) => e.permissionCode !== entity.permissionCode).map(
+        (e) => e.permissionCode,
+      );
       const a = access([CONSULTAS_CODES.module, CONSULTAS_CODES.create, ...others]);
       expect(codeOf(() => validateConsulta(baseSpec(entity), a)), entity.key).toBe("FORBIDDEN");
       expect(visibleCatalog(a).some((e) => e.key === entity.key)).toBe(false);

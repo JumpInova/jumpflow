@@ -171,14 +171,26 @@ function prepare(context: ConsultaContext, raw: unknown, origin: ConsultaOrigin)
   return validateConsulta(raw, context.access);
 }
 
-/** Roda a consulta para a TELA: página de 100, até 1000 linhas navegáveis. */
+/** Metadados de auditoria quando a spec vem de uma visão salva. */
+export interface ConsultaRunMeta {
+  viewId?: string;
+}
+
+/**
+ * Roda a consulta para a TELA: página de 100, até 1000 linhas navegáveis.
+ * `origin: "saved_view"` só pode ser usado por quem carregou a spec NO
+ * SERVIDOR (lib/db/consultas-saved.ts) — nunca repasse a origem do cliente.
+ */
 export async function runConsulta(
   user: AppUser,
   raw: unknown,
   page = 1,
+  origin: ConsultaOrigin = "adhoc",
+  meta: ConsultaRunMeta = {},
+  preloaded?: ConsultaContext,
 ): Promise<ConsultaRunResult> {
-  const context = await getConsultaContext(user);
-  const validated = prepare(context, raw, "adhoc");
+  const context = preloaded ?? (await getConsultaContext(user));
+  const validated = prepare(context, raw, origin);
   const compiled = compileConsulta(validated.entity, validated.spec, context.scope);
   const window = resolveScreenPage(page, validated.spec.limit);
 
@@ -198,6 +210,8 @@ export async function runConsulta(
     await auditSensitiveRun(user, validated, "CONSULTA_EXECUTADA_SENSIVEL", {
       page: window.page,
       totalRows: total,
+      origin,
+      ...(meta.viewId ? { viewId: meta.viewId } : {}),
     });
   }
 
@@ -247,8 +261,10 @@ export async function exportConsulta(
   raw: unknown,
   format: "xlsx" | "csv",
   origin: ConsultaOrigin,
+  meta: ConsultaRunMeta = {},
+  preloaded?: ConsultaContext,
 ): Promise<ConsultaExportData> {
-  const context = await getConsultaContext(user);
+  const context = preloaded ?? (await getConsultaContext(user));
   if (!context.access.export) {
     throw new ConsultaError(
       "FORBIDDEN",
@@ -271,6 +287,7 @@ export async function exportConsulta(
   await auditSensitiveRun(user, validated, "CONSULTA_EXPORTADA", {
     format,
     origin,
+    ...(meta.viewId ? { viewId: meta.viewId } : {}),
     rowCount: rawRows.length,
     totalRows: total,
   });

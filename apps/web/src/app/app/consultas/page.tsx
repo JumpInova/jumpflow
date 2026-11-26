@@ -1,17 +1,16 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import { BookOpenText, Lock } from "lucide-react";
+import { Lock } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConsultaBuilder } from "@/components/consultas/ConsultaBuilder";
+import { ConsultasNav } from "@/components/consultas/ConsultasNav";
+import type { EditingView } from "@/components/consultas/SaveViewDialog";
 import { requireUser } from "@/lib/auth/guards";
 import { isDatabaseConfigured } from "@/lib/db/config";
 import { visibleCatalog } from "@/lib/consultas/access";
 import { initialSpec } from "@/lib/consultas/builder";
 import { loadConsultaAccess } from "@/lib/consultas/page-access";
-import { focusRing } from "@/lib/styles";
-import { cn } from "@/lib/utils";
 import type { ConsultaEntity, ConsultaSpec } from "@/lib/consultas/types";
 
 export const metadata: Metadata = { title: "Consultas" };
@@ -59,41 +58,43 @@ export default async function ConsultasPage({
   const user = await requireUser();
   const access = await loadConsultaAccess(user);
   if (!access.module) redirect("/access-denied");
+  // Sem CRIAR, o módulo é das visões compartilhadas.
+  if (!access.create) redirect("/app/consultas/visoes");
   const params = await searchParams;
   const entities = visibleCatalog(access);
+  const demo = !isDatabaseConfigured();
+
+  // `?visao=<id>`: abre a PRÓPRIA visão no construtor para editar. A spec é
+  // lida no servidor e só vale se a visão roda com a permissão atual.
+  let editing: EditingView | undefined;
+  let initial = initialFromParams(entities, params);
+  const viewId = first(params.visao);
+  if (viewId && !demo) {
+    const { getSavedViewForViewer } = await import("@/lib/db/consultas-saved");
+    const loaded = await getSavedViewForViewer(user, viewId);
+    if (loaded?.summary.isOwner && loaded.summary.available) {
+      editing = {
+        id: loaded.summary.id,
+        name: loaded.summary.name,
+        description: loaded.summary.description ?? "",
+        visualization: loaded.summary.visualization,
+        sharing: loaded.summary.sharing,
+        sharedRoles: loaded.summary.sharedRoles,
+      };
+      initial = loaded.spec as ConsultaSpec;
+    }
+  }
 
   const header = (
-    <PageHeader
-      eyebrow="Gestão"
-      title="Consultas"
-      description="Monte relatórios próprios: escolha a entidade, filtre, agrupe e some. Cada campo está explicado no catálogo de dados."
-      actions={
-        <Link
-          href="/app/consultas/catalogo"
-          className={cn(
-            "inline-flex h-10 items-center gap-2 rounded-md border border-border bg-surface px-4 text-sm font-semibold text-strong hover:bg-surface-muted",
-            focusRing,
-          )}
-        >
-          <BookOpenText aria-hidden="true" className="size-4" />
-          Catálogo de dados
-        </Link>
-      }
-    />
+    <>
+      <PageHeader
+        eyebrow="Gestão"
+        title={editing ? `Editar visão: ${editing.name}` : "Consultas"}
+        description="Monte relatórios próprios: escolha a entidade, filtre, agrupe e some. Cada campo está explicado no catálogo de dados."
+      />
+      <ConsultasNav canCreate={access.create} />
+    </>
   );
-
-  if (!access.create) {
-    return (
-      <div className="space-y-6">
-        {header}
-        <EmptyState
-          icon={Lock}
-          title="Sem permissão para criar consultas"
-          description="Seu perfil pode consultar o catálogo de dados. As visões compartilhadas com você aparecerão aqui quando estiverem disponíveis."
-        />
-      </div>
-    );
-  }
 
   if (entities.length === 0) {
     return (
@@ -112,10 +113,13 @@ export default async function ConsultasPage({
     <div className="space-y-6">
       {header}
       <ConsultaBuilder
+        key={editing?.id ?? "nova"}
         entities={entities}
         canExport={access.export}
-        demo={!isDatabaseConfigured()}
-        initial={initialFromParams(entities, params)}
+        canShare={access.share}
+        demo={demo}
+        initial={initial}
+        editing={editing}
       />
     </div>
   );

@@ -10,7 +10,7 @@ import {
   type PermissionMatrix,
 } from "@/lib/auth/permission-codes";
 import { CONSULTA_ENTITIES } from "./catalog";
-import type { ConsultaEntity, ConsultaField } from "./types";
+import type { ConsultaEntity, ConsultaField, Sensitivity } from "./types";
 
 export interface ConsultaAccess {
   /** `CONSULTAS` view: abre o módulo (tela do catálogo). */
@@ -19,6 +19,8 @@ export interface ConsultaAccess {
   create: boolean;
   /** `CONSULTAS_EXPORTAR`: exporta XLSX/CSV. */
   export: boolean;
+  /** `CONSULTAS_COMPARTILHAR`: compartilha visões e painéis (ROLES/ALL). */
+  share: boolean;
   /** Chaves das entidades liberadas (view no `permissionCode` da entidade). */
   entities: ReadonlySet<string>;
   /** Campos `financeiro`: mesma regra dos Relatórios (`includeFinancials`). */
@@ -46,6 +48,7 @@ export function buildConsultaAccess(
     module: moduleView,
     create: moduleView && matrixAllows(matrix, CONSULTAS_CODES.create, "view"),
     export: moduleView && matrixAllows(matrix, CONSULTAS_CODES.export, "view"),
+    share: moduleView && matrixAllows(matrix, CONSULTAS_CODES.share, "view"),
     entities,
     financial: columns.financial,
     sensitiveCost: columns.sensitiveCost,
@@ -58,17 +61,23 @@ export const NO_CONSULTA_ACCESS: ConsultaAccess = {
   module: false,
   create: false,
   export: false,
+  share: false,
   entities: new Set(),
   financial: false,
   sensitiveCost: false,
   financeHoursLimited: false,
 };
 
+/** Régua de sensibilidade (§4.3), comum a campos e métricas. */
+export function canSeeSensitivity(access: ConsultaAccess, sensitivity: Sensitivity): boolean {
+  if (sensitivity === "financeiro") return access.financial;
+  if (sensitivity === "custo_sensivel") return access.sensitiveCost;
+  return true;
+}
+
 export function canSeeField(access: ConsultaAccess, field: ConsultaField): boolean {
   if (field.financeRestricted && access.financeHoursLimited) return false;
-  if (field.sensitivity === "financeiro") return access.financial;
-  if (field.sensitivity === "custo_sensivel") return access.sensitiveCost;
-  return true;
+  return canSeeSensitivity(access, field.sensitivity);
 }
 
 export function canSeeEntity(access: ConsultaAccess, entityKey: string): boolean {
@@ -93,6 +102,13 @@ export function visibleCatalog(access: ConsultaAccess): ConsultaEntity[] {
       examples: entity.examples.filter((example) =>
         specFieldKeys(example.spec).every((key) => visible.has(key)),
       ),
+      ...(entity.metrics
+        ? {
+            metrics: entity.metrics.filter((metric) =>
+              canSeeSensitivity(access, metric.sensitivity),
+            ),
+          }
+        : {}),
     });
   }
   return result;

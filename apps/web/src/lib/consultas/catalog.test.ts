@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fullControlMatrix, SYSTEM_PERMISSION_CODES } from "@/lib/auth/permission-codes";
 import { buildConsultaAccess } from "./access";
 import { CONSULTA_ENTITIES, fieldAggregations } from "./catalog";
+import { SCOPE_COLUMNS } from "./compile";
 import { validateConsulta } from "./validate";
 
 const FULL = buildConsultaAccess(fullControlMatrix(), { financial: true, sensitiveCost: true });
@@ -68,8 +69,7 @@ describe("catálogo de Consultas (fonte única)", () => {
       const columns = [
         ...entity.fields.map((f) => f.column),
         "id",
-        "consultant_id",
-        entity.scope === "pessoa_projetos" ? "project_manager_ids" : "project_manager_id",
+        ...SCOPE_COLUMNS[entity.scope],
         ...(entity.financeStatusColumn ? [entity.financeStatusColumn] : []),
         ...(entity.detail ? [entity.detail.column] : []),
       ];
