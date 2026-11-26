@@ -64,8 +64,19 @@ function isActiveOn(rate: SaleRateRange, date: string): boolean {
   return Date.parse(rate.startsAt) <= target && target < toTime(rate.endsAt);
 }
 
+/**
+ * Mais recente primeiro (por dia de início). Empate no mesmo dia — só ocorre
+ * com faixas sobrepostas, que `findOverlappingSaleRate` bloqueia na escrita,
+ * mas pode existir em dados legados — é decidido pelo maior `id` em ordem de
+ * code unit (= `COLLATE "C"` no Postgres), para o resultado não depender da
+ * ordem de leitura e bater com as views de Consultas (consulta_horas).
+ */
 function newestFirst(left: SaleRateRange, right: SaleRateRange): number {
-  return Date.parse(right.startsAt) - Date.parse(left.startsAt);
+  const byDate = Date.parse(right.startsAt) - Date.parse(left.startsAt);
+  if (byDate !== 0) return byDate;
+  const l = left.id ?? "";
+  const r = right.id ?? "";
+  return l === r ? 0 : l < r ? 1 : -1;
 }
 
 export function resolveSaleRate(

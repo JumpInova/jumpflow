@@ -12,6 +12,7 @@ import {
   CalendarDays,
   CalendarRange,
   ClipboardCheck,
+  DatabaseZap,
   Clock,
   Compass,
   Flag,
@@ -557,6 +558,17 @@ const primaryNavigationRaw: NavItemDef[] = [
     description: "Relatórios de horas, despesas e consolidado, com exportação.",
   },
   {
+    // Consultas (docs/consultas): relatórios personalizados sobre o catálogo de
+    // dados. Gate pela matriz (CONSULTAS); entidades, colunas e escopo de linha
+    // são checados no servidor (lib/db/consultas.ts).
+    label: "Consultas",
+    href: "/app/consultas",
+    permissionCode: "CONSULTAS",
+    icon: DatabaseZap,
+    description:
+      "Monte relatórios próprios com filtros, agrupamentos e totais sobre o catálogo de dados.",
+  },
+  {
     // Pendentes de Fechamento (Melhorias v2 / correções de navegação): o Gerente
     // de Área libera o faturamento por projeto/competência; FINANCE/ADMIN
     // acompanham. Gate pela matriz (FINANCEIRO_STATUS_FATURAMENTO, semeado com
@@ -884,6 +896,7 @@ const primaryNavGroupSpecs: PrimaryNavGroupSpec[] = [
     hrefs: [
       "/app/dashboard",
       "/app/relatorios",
+      "/app/consultas",
       "/app/alocacao-ia",
       "/app/risco-projetos",
       "/app/score",

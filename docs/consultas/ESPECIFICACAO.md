@@ -19,7 +19,12 @@ Progresso e vereditos: `docs/consultas/ANDAMENTO.md`.
 3. Construtor **visual** + **IA** (fase C3). Não há linguagem textual própria (DSL)
    nem editor SQL.
 4. A IA nunca recebe dados, só o catálogo que o usuário pode ver.
-5. A IA do Flow é DeepSeek com fallback Gemini, via `getAiTextProvider()`
+5. **Custo e margem ficam FORA das Consultas** (decisão de 2026-11-26): os custos são
+   cifrados na aplicação; custo/margem continuam só nas telas financeiras existentes.
+   O catálogo não lista campos nem métricas de custo/margem, e nenhuma view lê tabelas de custo.
+6. **Escopo do Gestor de Área = o mesmo dos Relatórios** (`resolveReportScope`, hoje amplo).
+   Restringir por área fica para quando existir vínculo formal gestor↔área.
+7. A IA do Flow é DeepSeek com fallback Gemini, via `getAiTextProvider()`
    (`apps/web/src/lib/ai/provider.ts`). Não chamar provider direto.
 
 ## 2. Matriz de Permissões
@@ -100,9 +105,9 @@ Quem tem `CONSULTAS` mas não tem `CONSULTAS_CRIAR` só abre visões compartilha
 - **Métricas oficiais** ficam documentadas no catálogo com a fórmula:
   - Horas lançadas / aprovadas / faturáveis;
   - Receita (horas × valor de venda vigente);
-  - Custo;
-  - Margem;
   - % de ocupação.
+
+  Custo e margem não entram (decisão 5).
 - Dados `pessoal` (CPF, dados bancários, endereço, remuneração acordada) **não entram
   no catálogo**.
 
@@ -112,7 +117,7 @@ Quem tem `CONSULTAS` mas não tem `CONSULTAS_CRIAR` só abre visões compartilha
 2. **Linha:** reusar o escopo dos Relatórios (`resolveReportScope` em
    `lib/db/reports.ts`). Cada view recebe, de forma obrigatória, um AND com o escopo
    do usuário, aplicado pelo servidor:
-   - gestor de área → a própria área;
+   - gestor de área → o mesmo escopo dos Relatórios (decisão 6);
    - PM → os próprios projetos;
    - escopo amplo → tudo.
 
