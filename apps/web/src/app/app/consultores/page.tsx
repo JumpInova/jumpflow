@@ -11,7 +11,13 @@ import {
   CONSULTANT_CURRICULUM_CODE,
   CONSULTANT_DOCUMENTS_CODE,
   CONSULTANT_PERSONAL_CODE,
+  CONSULTANT_PROJECT_HISTORY_CODE,
+  CONSULTANT_REPORT_CODE,
 } from "@/lib/auth/permission-codes";
+import {
+  CONSULTANT_REPORT_ROLES,
+  PROJECT_HISTORY_ROLES,
+} from "@/lib/auth/roles";
 import type { RoleName } from "@/lib/auth/types";
 import { isDatabaseConfigured } from "@/lib/db/config";
 import { listConsultantDirectory } from "@/lib/db/consultants";
@@ -42,14 +48,37 @@ export default async function ConsultoresPage({
     view: await hasRoleOrPermission(user, roles, code, "view"),
     edit: await hasRoleOrPermission(user, roles, code, "edit"),
   });
-  const [personal, documents, curriculum, bank, compensation] =
-    await Promise.all([
-      groupPerm(PEOPLE_ROLES, CONSULTANT_PERSONAL_CODE),
-      groupPerm(PEOPLE_ROLES, CONSULTANT_DOCUMENTS_CODE),
-      groupPerm(PEOPLE_ROLES, CONSULTANT_CURRICULUM_CODE),
-      groupPerm(PEOPLE_ROLES, CONSULTANT_BANK_CODE),
-      groupPerm(FINANCIAL_ROLES, CONSULTANT_COMPENSATION_CODE),
-    ]);
+  const [
+    personal,
+    documents,
+    curriculum,
+    bank,
+    compensation,
+    projectHistoryView,
+    canExportReport,
+  ] = await Promise.all([
+    groupPerm(PEOPLE_ROLES, CONSULTANT_PERSONAL_CODE),
+    groupPerm(PEOPLE_ROLES, CONSULTANT_DOCUMENTS_CODE),
+    groupPerm(PEOPLE_ROLES, CONSULTANT_CURRICULUM_CODE),
+    groupPerm(PEOPLE_ROLES, CONSULTANT_BANK_CODE),
+    groupPerm(FINANCIAL_ROLES, CONSULTANT_COMPENSATION_CODE),
+    // Histórico de projetos: somente leitura (derivado das alocações).
+    hasRoleOrPermission(
+      user,
+      PROJECT_HISTORY_ROLES,
+      CONSULTANT_PROJECT_HISTORY_CODE,
+      "view",
+    ),
+    // Relatório de consultores (XLSX): ADMIN / Gestor de Área / People ou Matriz.
+    // O endpoint revalida o gate; aqui só decide se o botão aparece.
+    databaseReady &&
+      hasRoleOrPermission(
+        user,
+        CONSULTANT_REPORT_ROLES,
+        CONSULTANT_REPORT_CODE,
+        "view",
+      ),
+  ]);
   // Custo do consultor (valor acordado, valor/hora por projeto): exclusivo do
   // grupo Dados Sensíveis — não vem da Matriz nem de FINANCIAL_ROLES.
   const sensitiveCost = canAccessSensitiveCost(user);
@@ -60,6 +89,7 @@ export default async function ConsultoresPage({
     bank,
     compensation,
     sensitiveCost: { view: sensitiveCost, edit: sensitiveCost },
+    projectHistory: { view: projectHistoryView, edit: false },
   };
   // Remuneração é visível a papéis financeiros OU a quem a Matriz liberar, e
   // sempre ao grupo Dados Sensíveis (que edita os valores acordados).
@@ -70,7 +100,7 @@ export default async function ConsultoresPage({
       <PageHeader
         eyebrow="Pessoas"
         title="Consultores"
-        description="Diretorio de consultores com senioridade, area, disponibilidade e principais skills."
+        description="Diretorio de consultores com senioridade, area, disponibilidade, principais skills e historico de projetos."
       />
       <ConsultantDirectory
         consultants={consultants}
@@ -78,6 +108,7 @@ export default async function ConsultoresPage({
         canManageFinancials={canManageFinancials}
         groupPerms={groupPerms}
         initialConsultantId={params.novo}
+        canExportReport={canExportReport}
       />
     </div>
   );

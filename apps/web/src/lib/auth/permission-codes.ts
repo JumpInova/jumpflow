@@ -63,6 +63,19 @@ export const CONSULTANT_CURRICULUM_CODE = "CONSULTORES_CURRICULO";
 export const CONSULTANT_BANK_CODE = "CONSULTORES_BANCARIAS";
 
 /**
+ * Histórico de projetos do consultor (derivado das alocações: projeto, perfil,
+ * início/fim e se está ativo). Somente leitura no cadastro; leitura ampla para
+ * quem já vê o perfil (CONSULTANT_PROFILE_VIEW). Child of `CONSULTORES`.
+ */
+export const CONSULTANT_PROJECT_HISTORY_CODE = "CONSULTORES_PROJETOS";
+
+/**
+ * Exportação do relatório de consultores com o histórico de projetos (XLSX).
+ * Padrão: ADMIN, Gestor de Área e People. Child of `CONSULTORES`.
+ */
+export const CONSULTANT_REPORT_CODE = "CONSULTORES_RELATORIO";
+
+/**
  * The five consultant-registration groups (M1), each a matrix code. Order is the
  * display order in the consultant detail. `CONSULTANT_COMPENSATION_CODE` keeps
  * its historical name (`_REMUNERACAO`).
@@ -224,6 +237,8 @@ export const SYSTEM_PERMISSION_CODES: ReadonlySet<string> = new Set([
   "CONSULTORES_CURRICULO",
   "CONSULTORES_BANCARIAS",
   "CONSULTORES_REMUNERACAO",
+  "CONSULTORES_PROJETOS",
+  "CONSULTORES_RELATORIO",
   "SKILLS",
   "COMPETENCIAS",
   "DISPONIBILIDADE",

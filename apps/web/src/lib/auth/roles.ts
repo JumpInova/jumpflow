@@ -62,3 +62,27 @@ export function isRoleName(value: unknown): value is RoleName {
 export function primaryRoleLabel(roles: RoleName[]): string {
   return roles.length > 0 ? roleLabels[roles[0]] : "Sem perfil";
 }
+
+/**
+ * Fallback de papel do histórico de projetos do consultor (seção somente
+ * leitura no cadastro). Espelha o default de `CONSULTORES_PROJETOS` no seed; a
+ * Matriz pode ampliar para outros papéis.
+ */
+export const PROJECT_HISTORY_ROLES: RoleName[] = [
+  "ADMIN",
+  "AREA_MANAGER",
+  "FINANCE",
+  "PEOPLE",
+  "PROJECT_MANAGER",
+  "SALES",
+];
+
+/**
+ * Fallback de papel do relatório de consultores (export XLSX com o histórico de
+ * projetos): ADMIN, Gestor de Área e People. Espelha `CONSULTORES_RELATORIO`.
+ */
+export const CONSULTANT_REPORT_ROLES: RoleName[] = [
+  "ADMIN",
+  "AREA_MANAGER",
+  "PEOPLE",
+];

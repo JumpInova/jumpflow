@@ -50,6 +50,8 @@ export const PERMISSION_CATALOG_ALIGNMENT = [
   { code: "CONSULTORES_CURRICULO", name: "Currículo", module: "Pessoas", parent: "CONSULTORES", sortOrder: 60 },
   { code: "CONSULTORES_BANCARIAS", name: "Contas bancárias", module: "Pessoas", parent: "CONSULTORES", sortOrder: 60 },
   { code: "CONSULTORES_REMUNERACAO", name: "Valores e remuneração", module: "Pessoas", parent: "CONSULTORES", sortOrder: 60 },
+  { code: "CONSULTORES_PROJETOS", name: "Histórico de projetos", module: "Pessoas", parent: "CONSULTORES", sortOrder: 60 },
+  { code: "CONSULTORES_RELATORIO", name: "Relatório de consultores", module: "Pessoas", parent: "CONSULTORES", sortOrder: 60 },
   { code: "SKILLS", name: "Skills", module: "Pessoas", parent: null, sortOrder: 61 },
   { code: "COMPETENCIAS", name: "Competências", module: "Pessoas", parent: null, sortOrder: 62 },
   { code: "DISPONIBILIDADE", name: "Disponibilidade", module: "Pessoas", parent: null, sortOrder: 63 },
