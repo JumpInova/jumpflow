@@ -364,6 +364,10 @@ export const routePermissions: RouteRule[] = [
   // for consultants, managed projects for PMs, broad for gestao/finance) is
   // applied by the read functions in `lib/db/reports.ts`, not by this route.
   { prefix: "/app/relatorios", access: "ALL" },
+  // Consultas: o gate é a Matriz (CONSULTAS, via item de navegação no layout) —
+  // o público muda por configuração, não por código. Entidade, colunas e escopo
+  // de linha são revalidados no servidor a cada execução (lib/db/consultas.ts).
+  { prefix: "/app/consultas", access: "ALL" },
   // Access administration (invitations, roles, status). ADMIN only — must come
   // before the broad `/app` rule. The public invite-accept route lives at
   // `/convite/*`, outside `/app`, so the proxy matcher never gates it.

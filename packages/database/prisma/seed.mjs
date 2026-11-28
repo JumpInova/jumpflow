@@ -1225,6 +1225,26 @@ const PERMISSION_CATALOG = [
   // liberável pela Matriz a People/DP. NÃO libera colunas financeiras.
   { code: "RELATORIOS_CONSULTORES", name: "Filtro por consultor", module: "Relatórios & Análises", parent: "RELATORIOS", sort: 104, view: FINANCIAL_PEOPLE },
 
+  // Consultas (relatórios personalizados sobre o catálogo de dados — docs/consultas).
+  // Só `view` por padrão; CONSULTANT/SALES sem acesso. Cada entidade é um code
+  // próprio; CRIAR/COMPARTILHAR/EXPORTAR/AGENDAR/IA são ações do módulo.
+  { code: "CONSULTAS", name: "Consultas", module: "Gestão", sort: 105, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE", "PEOPLE"] },
+  { code: "CONSULTAS_HORAS", name: "Consultas: Horas", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE"] },
+  { code: "CONSULTAS_ALOCACOES", name: "Consultas: Alocações", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE", "PEOPLE"] },
+  { code: "CONSULTAS_CONSULTORES", name: "Consultas: Consultores", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PROJECT_MANAGER", "PEOPLE"] },
+  { code: "CONSULTAS_PROJETOS", name: "Consultas: Projetos", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE"] },
+  { code: "CONSULTAS_APROVACOES", name: "Consultas: Aprovações", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PROJECT_MANAGER"] },
+  { code: "CONSULTAS_DESPESAS", name: "Consultas: Despesas", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["FINANCE"] },
+  { code: "CONSULTAS_FATURAMENTO", name: "Consultas: Faturamento", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["FINANCE"] },
+  { code: "CONSULTAS_PAGAMENTOS", name: "Consultas: Pagamentos", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["FINANCE"] },
+  { code: "CONSULTAS_SKILLS", name: "Consultas: Skills e certificados", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PEOPLE"] },
+  { code: "CONSULTAS_AUSENCIAS", name: "Consultas: Ausências", module: "Gestão", parent: "CONSULTAS", sort: 106, view: ["AREA_MANAGER", "PEOPLE"] },
+  { code: "CONSULTAS_CRIAR", name: "Criar consultas", module: "Gestão", parent: "CONSULTAS", sort: 107, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE", "PEOPLE"] },
+  { code: "CONSULTAS_COMPARTILHAR", name: "Compartilhar visões", module: "Gestão", parent: "CONSULTAS", sort: 107, view: ["AREA_MANAGER", "FINANCE", "PEOPLE"] },
+  { code: "CONSULTAS_EXPORTAR", name: "Exportar resultados", module: "Gestão", parent: "CONSULTAS", sort: 107, view: ["AREA_MANAGER", "FINANCE", "PEOPLE"] },
+  { code: "CONSULTAS_AGENDAR", name: "Agendar envio", module: "Gestão", parent: "CONSULTAS", sort: 107, view: ["FINANCE"] },
+  { code: "CONSULTAS_IA", name: "Assistente de IA", module: "Gestão", parent: "CONSULTAS", sort: 107, view: ["AREA_MANAGER", "PROJECT_MANAGER", "FINANCE", "PEOPLE"] },
+
   { code: "FINANCEIRO", name: "Financeiro", module: "Financeiro", sort: 110, view: FINANCIAL, create: FINANCIAL, edit: FINANCIAL },
   { code: "FINANCEIRO_COBRANCA", name: "Cobrança de projetos", module: "Financeiro", parent: "FINANCEIRO", sort: 111, view: FINANCIAL, edit: FINANCIAL },
   { code: "FINANCEIRO_FECHAMENTO", name: "Fechamento mensal", module: "Financeiro", parent: "FINANCEIRO", sort: 112, view: FINANCIAL, edit: FINANCIAL, active: false },

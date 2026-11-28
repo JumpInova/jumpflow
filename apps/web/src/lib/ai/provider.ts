@@ -28,8 +28,15 @@ export const AI_MODELS = {
 
 export type AiModel = (typeof AI_MODELS)[keyof typeof AI_MODELS];
 
-/** Qual provider concreto usar; vazio/desconhecido -> noop desligado. */
-export type AiProviderKind = "anthropic" | "gemini";
+/**
+ * Qual provider concreto usar; vazio/desconhecido -> noop desligado.
+ *
+ * - "deepseek": DeepSeek como PRINCIPAL e Gemini como FALLBACK (quando houver
+ *   chave do Gemini). E a configuracao padrao do JumpFlow.
+ * - "gemini": somente Gemini (legado).
+ * - "anthropic": somente Claude.
+ */
+export type AiProviderKind = "anthropic" | "gemini" | "deepseek";
 
 export interface AiCompleteOptions {
   /** Which Claude model to use. Defaults are chosen per call site (cost vs quality). */
@@ -350,19 +357,173 @@ class GeminiAiTextProvider implements AiTextProvider {
 }
 
 // ---------------------------------------------------------------------------
+// DeepSeek (principal)
+// ---------------------------------------------------------------------------
+
+/** Modelo default do DeepSeek (DeepSeek-V4.1-Flash). Ajustavel por env. */
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
+const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_TIMEOUT_MS = 60_000;
+
+function deepseekApiKey(): string | undefined {
+  return process.env.DEEPSEEK_API_KEY?.trim() || undefined;
+}
+
+function deepseekModel(): string {
+  return process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+}
+
+function deepseekBaseUrl(): string {
+  return (
+    process.env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL
+  ).replace(/\/+$/, "");
+}
+
+function deepseekTimeoutMs(): number {
+  const parsed = Number(process.env.DEEPSEEK_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_DEEPSEEK_TIMEOUT_MS;
+}
+
+/**
+ * Raciocinio ("thinking") DESLIGADO por padrao: os call sites usam `maxTokens`
+ * pequenos e, com o raciocinio ligado, os tokens de pensamento contam dentro do
+ * limite — a resposta podia sair vazia/cortada. `DEEPSEEK_THINKING=true` religa.
+ */
+function deepseekThinkingEnabled(): boolean {
+  const raw = process.env.DEEPSEEK_THINKING?.trim().toLowerCase();
+  return raw === "true" || raw === "1";
+}
+
+interface DeepSeekResponse {
+  choices?: Array<{ message?: { content?: string | null } }>;
+}
+
+/**
+ * Provider DeepSeek via API compativel com OpenAI (`/chat/completions`), com
+ * `fetch` portatil (sem SDK). Mesmo contrato seguro dos demais: em QUALQUER
+ * falha loga uma linha enxuta (status, nunca chave/corpo) e devolve `null` —
+ * na cadeia, isso aciona o fallback (Gemini).
+ *
+ * - `opts.model` e IGNORADO (carrega ids Claude); o modelo vem de `DEEPSEEK_MODEL`.
+ * - Nao le PDF: `completeWithDocument` devolve `null` para o fallback assumir.
+ * - `json: true` so vira `response_format: json_object` quando o prompt/system
+ *   menciona "json" (exigencia da API; sem isso ela responde 400).
+ */
+class DeepSeekAiTextProvider implements AiTextProvider {
+  constructor(private readonly apiKey: string) {}
+
+  async complete(
+    prompt: string,
+    opts?: AiCompleteOptions,
+  ): Promise<string | null> {
+    const model = deepseekModel();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), deepseekTimeoutMs());
+    const wantsJson =
+      opts?.json === true &&
+      /json/i.test(`${opts?.system ?? ""}\n${prompt}`);
+    try {
+      const response = await fetch(`${deepseekBaseUrl()}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            ...(opts?.system ? [{ role: "system", content: opts.system }] : []),
+            { role: "user", content: prompt },
+          ],
+          temperature: 0,
+          max_tokens: opts?.maxTokens ?? 1024,
+          ...(wantsJson ? { response_format: { type: "json_object" } } : {}),
+          ...(deepseekThinkingEnabled()
+            ? {}
+            : { thinking: { type: "disabled" } }),
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        console.error("[ai] deepseek request failed", response.status);
+        return null;
+      }
+      const json = (await response.json()) as DeepSeekResponse;
+      const text = (json.choices?.[0]?.message?.content ?? "").trim();
+      return text.length > 0 ? text : null;
+    } catch (error) {
+      console.error(
+        "[ai] deepseek request error",
+        error instanceof Error ? error.message : "unknown",
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async completeWithDocument(): Promise<string | null> {
+    // DeepSeek nao aceita PDF: o fallback (Gemini) le o documento.
+    return null;
+  }
+}
+
+/**
+ * Encadeia providers: tenta cada um em ordem e devolve a primeira resposta nao
+ * nula. Como todo provider devolve `null` em falha (nunca lanca), o fallback e
+ * transparente para quem chama.
+ */
+class FallbackAiTextProvider implements AiTextProvider {
+  constructor(private readonly chain: AiTextProvider[]) {}
+
+  async complete(
+    prompt: string,
+    opts?: AiCompleteOptions,
+  ): Promise<string | null> {
+    for (const provider of this.chain) {
+      const out = await provider.complete(prompt, opts);
+      if (out !== null) return out;
+    }
+    return null;
+  }
+
+  async completeWithDocument(
+    prompt: string,
+    document: AiDocumentSource,
+    opts?: AiCompleteOptions,
+  ): Promise<string | null> {
+    for (const provider of this.chain) {
+      const out = await provider.completeWithDocument(prompt, document, opts);
+      if (out !== null) return out;
+    }
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Selecao do provider
 // ---------------------------------------------------------------------------
 
 /** Normaliza o provider configurado; null quando ausente/desconhecido. */
 function resolveAiProviderKind(): AiProviderKind | null {
   const raw = process.env.AI_PROVIDER?.trim().toLowerCase();
-  return raw === "anthropic" || raw === "gemini" ? raw : null;
+  return raw === "anthropic" || raw === "gemini" || raw === "deepseek"
+    ? raw
+    : null;
 }
 
-/** Se o provider escolhido tem a credencial correspondente presente. */
+/**
+ * Se o provider escolhido tem credencial. Para "deepseek" basta UMA das chaves
+ * da cadeia (DeepSeek ou Gemini): sem a do DeepSeek o Gemini assume sozinho.
+ */
 function hasAiCredential(kind: AiProviderKind): boolean {
   if (kind === "anthropic") {
     return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
+  }
+  if (kind === "deepseek") {
+    return Boolean(deepseekApiKey() || geminiApiKey());
   }
   return Boolean(geminiApiKey());
 }
@@ -378,15 +539,28 @@ export function isAiProviderConfigured(): boolean {
 }
 
 /**
- * Nome do modelo que DE FATO seria usado agora. Serve para auditoria/log nao
- * mentir: os call sites passam `AI_MODELS.*` (ids Claude), mas com o Gemini
- * selecionado quem responde e o modelo do Gemini.
+ * Se ha um provider capaz de ler documento (PDF). O DeepSeek nao le; na cadeia
+ * "deepseek" isso depende de existir a chave do Gemini (fallback).
+ */
+export function isAiDocumentProviderConfigured(): boolean {
+  const kind = resolveAiProviderKind();
+  if (kind === null || !hasAiCredential(kind)) return false;
+  if (kind === "deepseek") return Boolean(geminiApiKey());
+  return true;
+}
+
+/**
+ * Nome do modelo PRINCIPAL que seria usado agora (auditoria/log). Na cadeia
+ * "deepseek" e o modelo do DeepSeek; se so houver a chave do Gemini, o dele.
  */
 export function getConfiguredAiModel(): string {
   const kind = resolveAiProviderKind();
+  if (kind === null || !hasAiCredential(kind)) return "none";
+  if (kind === "deepseek") {
+    return deepseekApiKey() ? deepseekModel() : geminiModel();
+  }
   if (kind === "gemini") return geminiModel();
-  if (kind === "anthropic") return AI_MODELS.SONNET;
-  return "none";
+  return AI_MODELS.SONNET;
 }
 
 /**
@@ -403,6 +577,14 @@ export function getAiTextProvider(): AiTextProvider {
     return new AnthropicAiTextProvider(
       (process.env.ANTHROPIC_API_KEY as string).trim(),
     );
+  }
+  if (kind === "deepseek") {
+    const chain: AiTextProvider[] = [];
+    const dsKey = deepseekApiKey();
+    if (dsKey) chain.push(new DeepSeekAiTextProvider(dsKey));
+    const gKey = geminiApiKey();
+    if (gKey) chain.push(new GeminiAiTextProvider(gKey.trim()));
+    return chain.length === 1 ? chain[0] : new FallbackAiTextProvider(chain);
   }
   return new GeminiAiTextProvider((geminiApiKey() as string).trim());
 }

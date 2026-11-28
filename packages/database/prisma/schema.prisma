@@ -833,6 +833,13 @@ model User {
   // apenas desvincula quem registrou.
   coeMembersAdded             CoeMember[]                 @relation("CoeMemberAddedBy")
   coeSquadsCreated            CoeSquad[]                  @relation("CoeSquadCreatedBy")
+  // Consultas (docs/consultas, C2): visoes salvas e paineis do usuario. Somem
+  // com o dono (Cascade) — nao ha transferencia de propriedade.
+  consultaViewsOwned          ConsultaView[]              @relation("ConsultaViewOwner")
+  consultaPanelsOwned         ConsultaPanel[]             @relation("ConsultaPanelOwner")
+  // Consultas (C3): agendamentos criados pelo usuario e uso do assistente de IA.
+  consultaSchedulesOwned      ConsultaSchedule[]          @relation("ConsultaScheduleOwner")
+  consultaAiUsage             ConsultaAiUsage[]           @relation("ConsultaAiUsageUser")
   createdAt                   DateTime                    @default(now())
   updatedAt                   DateTime                    @updatedAt
 }
@@ -3805,4 +3812,151 @@ model InboundEmail {
 
   @@index([referenceType, referenceId])
   @@index([threadId])
+}
+
+/// Consultas (docs/consultas/ESPECIFICACAO.md §6 C2): forma de exibir uma visao.
+enum ConsultaVisualization {
+  TABLE
+  BAR
+  LINE
+  PIE
+  INDICATOR
+}
+
+/// Consultas: com quem a visao/painel e compartilhado. PRIVATE = so o dono;
+/// ROLES = papeis em sharedRoles; ALL = todos com acesso ao modulo Consultas.
+/// Compartilhar (ROLES/ALL) exige CONSULTAS_COMPARTILHAR. Quem abre SEMPRE
+/// executa com a propria permissao (entidade, campos e escopo de linha).
+enum ConsultaSharing {
+  PRIVATE
+  ROLES
+  ALL
+}
+
+/// Visao salva de Consultas: uma ConsultaSpec (AST validada no servidor) +
+/// forma de exibicao. `entity` duplica spec.entity para filtrar a listagem
+/// pelo acesso de quem ve sem abrir o JSON.
+model ConsultaView {
+  id            String                @id @default(cuid())
+  schedules     ConsultaSchedule[]
+  ownerId       String
+  owner         User                  @relation("ConsultaViewOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  entity        String
+  spec          Json
+  visualization ConsultaVisualization @default(TABLE)
+  sharing       ConsultaSharing       @default(PRIVATE)
+  sharedRoles   RoleName[]            @default([])
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([ownerId])
+  @@index([sharing])
+}
+
+/// Painel de Consultas: ate 24 referencias a visoes (`items` = [{ viewId,
+/// size }]). Ao renderizar, o acesso a CADA visao e revalidado para quem ve —
+/// visao privada de outro dono ou de entidade sem acesso nao aparece (nem o nome).
+model ConsultaPanel {
+  id          String          @id @default(cuid())
+  schedules   ConsultaSchedule[]
+  ownerId     String
+  owner       User            @relation("ConsultaPanelOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  items       Json
+  sharing     ConsultaSharing @default(PRIVATE)
+  sharedRoles RoleName[]      @default([])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([ownerId])
+  @@index([sharing])
+}
+
+enum ConsultaScheduleFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum ConsultaScheduleRunStatus {
+  RUNNING
+  SENT
+  PARTIAL
+  SKIPPED
+  FAILED
+}
+
+/// Envio agendado de Consultas (C3): uma visao OU um painel por e-mail com
+/// XLSX anexo. Hora local America/Sao_Paulo. Destinatarios sao usuarios do
+/// sistema (`recipientUserIds`); cada um recebe o arquivo gerado com a
+/// PROPRIA permissao (sem acesso -> pulado e registrado no run).
+/// `activeSince`: ocorrencias anteriores nao sao enviadas (criacao, reativacao
+/// ou mudanca de frequencia/horario).
+model ConsultaSchedule {
+  id               String                    @id @default(cuid())
+  ownerId          String
+  owner            User                      @relation("ConsultaScheduleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  viewId           String?
+  view             ConsultaView?             @relation(fields: [viewId], references: [id], onDelete: Cascade)
+  panelId          String?
+  panel            ConsultaPanel?            @relation(fields: [panelId], references: [id], onDelete: Cascade)
+  name             String
+  frequency        ConsultaScheduleFrequency
+  /// Hora local (0-23) em America/Sao_Paulo.
+  hour             Int
+  /// Semanal: 1 = segunda ... 7 = domingo (ISO).
+  weekday          Int?
+  /// Mensal: 1-31 (meses mais curtos usam o ultimo dia).
+  monthDay         Int?
+  recipientUserIds String[]                  @default([])
+  active           Boolean                   @default(true)
+  activeSince      DateTime                  @default(now())
+  lastRunAt        DateTime?
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  runs             ConsultaScheduleRun[]
+
+  @@index([ownerId])
+  @@index([active])
+  @@index([viewId])
+  @@index([panelId])
+}
+
+/// Execucao de um agendamento numa JANELA (`windowKey`): unica por
+/// (scheduleId, windowKey) — e a idempotencia. `leaseUntil` e o claim: outra
+/// instancia so assume um RUNNING com lease vencido (ou FAILED com tentativas
+/// sobrando). `results` = [{ userId, status, reason }] por destinatario, sem dados.
+model ConsultaScheduleRun {
+  id          String                    @id @default(cuid())
+  scheduleId  String
+  schedule    ConsultaSchedule          @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  windowKey   String
+  status      ConsultaScheduleRunStatus @default(RUNNING)
+  attempts    Int                       @default(1)
+  /// Token de posse do claim atual: só quem tem o token grava progresso/final.
+  claimToken  String?
+  leaseUntil  DateTime
+  startedAt   DateTime                  @default(now())
+  finishedAt  DateTime?
+  results     Json?
+
+  @@unique([scheduleId, windowKey])
+  @@index([status, leaseUntil])
+}
+
+/// Rate limit do assistente de IA de Consultas, persistido (Railway pode ter
+/// mais de uma instancia). Um contador por usuario por janela de 1 minuto,
+/// incrementado atomicamente (INSERT ... ON CONFLICT). Nunca guarda o texto.
+model ConsultaAiUsage {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation("ConsultaAiUsageUser", fields: [userId], references: [id], onDelete: Cascade)
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@unique([userId, windowStart])
+  @@index([windowStart])
 }

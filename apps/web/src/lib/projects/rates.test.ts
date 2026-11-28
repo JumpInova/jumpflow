@@ -112,5 +112,19 @@ describe("sale rates", () => {
       saleRateScopeKey({ ...projectRate, allocationId: "allocation-1" }),
     ).toBe("allocation:allocation-1");
   });
-});
 
+  it("desempata faixas do mesmo dia pelo maior id, independente da ordem de leitura", () => {
+    const a = { id: "rate-a", projectId: "p", startsAt: "2026-03-01", hourlyRate: 100 };
+    const b = { id: "rate-b", projectId: "p", startsAt: "2026-03-01", hourlyRate: 200 };
+    const older = { id: "rate-z", projectId: "p", startsAt: "2026-02-01", hourlyRate: 50 };
+    for (const order of [[a, b, older], [b, a, older], [older, a, b]]) {
+      expect(resolveSaleRate(order, { date: "2026-03-10" })).toMatchObject({
+        hourlyRate: 200,
+        rateId: "rate-b",
+      });
+    }
+    // Ordem binária (COLLATE "C"): maiúscula < minúscula.
+    const upper = { ...a, id: "Z-rate", hourlyRate: 300 };
+    expect(resolveSaleRate([upper, a], { date: "2026-03-10" })?.rateId).toBe("rate-a");
+  });
+});

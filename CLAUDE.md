@@ -90,5 +90,9 @@ docs/
 - Use `jump-qa-engineer` for test strategy and critical scenarios.
 - Use `jump-devops` for Railway, Supabase, Render and environments.
 - Use `jump-code-reviewer` before finishing meaningful code changes.
+- Use `jump-consultas-engineer` for the Consultas module (custom reports, data catalog) per `docs/consultas/ESPECIFICACAO.md`.
+- Use `jump-m365-engineer` for the Microsoft 365 integration (calendar, meeting minutes by e-mail, Teams transcripts) per `docs/m365/ESPECIFICACAO.md`.
+- Use `jump-delivery-tester` after each Consultas/M365 phase to add tests and run the suite (never edits production code).
+- Use `jump-delivery-validator` (read-only) to give the phase verdict before it is closed.
 
 For small localized changes, a single agent may be enough. For broad or critical work, orchestrate multiple agents following `docs/agentes.md`.

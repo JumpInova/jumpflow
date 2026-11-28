@@ -1035,3 +1035,74 @@ export function buildConsultantInvoiceRequestEmail(input: {
     text,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Consultas (C3): envio agendado de visão/painel com XLSX anexo.
+// ---------------------------------------------------------------------------
+
+/** Linha única para cabeçalho: caracteres de controle (C0/C1, U+2028/9) viram espaço. */
+function singleLineText(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildConsultaAgendadaEmail(input: {
+  scheduleName: string;
+  targetKind: "view" | "panel";
+  targetName: string;
+  timing: string;
+  sheetCount: number;
+  /** Visões do painel que este destinatário não pode ver (só a contagem). */
+  hiddenViews: number;
+  truncated: boolean;
+  /** Link para abrir a visão/painel no app (null sem NEXT_PUBLIC_APP_URL). */
+  link: string | null;
+  recipientName?: string;
+}): BuiltEmail {
+  const kindLabel = input.targetKind === "view" ? "Visão" : "Painel";
+  // Defesa em profundidade (o Zod já recusa): o nome vai para o ASSUNTO, então
+  // nenhum caractere de controle/quebra de linha passa (header injection).
+  const scheduleName = singleLineText(input.scheduleName);
+  const blocks: EmailBlock[] = [
+    paragraph(input.recipientName ? `Olá, ${input.recipientName}.` : "Olá."),
+    paragraph(
+      `Segue o envio agendado “${scheduleName}”. A planilha em anexo foi gerada agora, com os dados que o SEU perfil de acesso permite ver.`,
+    ),
+    keyValueList([
+      { label: kindLabel, value: input.targetName },
+      { label: "Frequência", value: input.timing },
+      { label: "Abas na planilha", value: String(input.sheetCount) },
+    ]),
+  ];
+  if (input.hiddenViews > 0) {
+    blocks.push(
+      callout(
+        `${input.hiddenViews} visão(ões) deste painel não entraram porque o seu perfil não tem acesso a elas.`,
+        "warning",
+      ),
+    );
+  }
+  if (input.truncated) {
+    blocks.push(
+      callout(
+        "O resultado passou do limite de linhas da exportação; a planilha traz só as primeiras. Adicione filtros à visão.",
+        "warning",
+      ),
+    );
+  }
+  if (input.link) blocks.push(button(`Abrir ${kindLabel.toLowerCase()} no ${app()}`, input.link));
+
+  const { html, text } = renderEmail({
+    preheader: `${kindLabel} ${input.targetName} — envio agendado`,
+    title: scheduleName,
+    blocks,
+    signoff: `Equipe ${app()}`,
+  });
+  return {
+    subject: `${app()} · ${scheduleName}`,
+    html,
+    text,
+  };
+}

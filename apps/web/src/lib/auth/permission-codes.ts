@@ -204,6 +204,31 @@ export const FLOW_PERMISSION_CODES = {
 } as const;
 
 /**
+ * Módulo Consultas (docs/consultas/ESPECIFICACAO.md §2). `module` abre a tela;
+ * cada entidade do catálogo tem o próprio code (o servidor exige `view` nele
+ * para consultar a entidade); os demais são ações do módulo. Somente `view` é
+ * semeado (migration 20261127100000); o público é configuração da Matriz.
+ */
+export const CONSULTAS_CODES = {
+  module: "CONSULTAS",
+  hours: "CONSULTAS_HORAS",
+  allocations: "CONSULTAS_ALOCACOES",
+  consultants: "CONSULTAS_CONSULTORES",
+  projects: "CONSULTAS_PROJETOS",
+  approvals: "CONSULTAS_APROVACOES",
+  expenses: "CONSULTAS_DESPESAS",
+  billing: "CONSULTAS_FATURAMENTO",
+  payments: "CONSULTAS_PAGAMENTOS",
+  skills: "CONSULTAS_SKILLS",
+  absences: "CONSULTAS_AUSENCIAS",
+  create: "CONSULTAS_CRIAR",
+  share: "CONSULTAS_COMPARTILHAR",
+  export: "CONSULTAS_EXPORTAR",
+  schedule: "CONSULTAS_AGENDAR",
+  ai: "CONSULTAS_IA",
+} as const;
+
+/**
  * Codes of the platform's NATIVE features — the ones seeded by
  * `PERMISSION_CATALOG` in `packages/database/prisma/seed.mjs` and checked by the
  * app (navigation gate, guards, server actions). In the admin CRUD they can be
@@ -310,6 +335,23 @@ export const SYSTEM_PERMISSION_CODES: ReadonlySet<string> = new Set([
   "SLA_PROJETOS",
   "PAGAMENTOS_RESPOSTAS_EMAIL",
   "CONFIGURACOES_RESPOSTAS_EMAIL",
+  // Consultas (migration 20261127100000).
+  "CONSULTAS",
+  "CONSULTAS_HORAS",
+  "CONSULTAS_ALOCACOES",
+  "CONSULTAS_CONSULTORES",
+  "CONSULTAS_PROJETOS",
+  "CONSULTAS_APROVACOES",
+  "CONSULTAS_DESPESAS",
+  "CONSULTAS_FATURAMENTO",
+  "CONSULTAS_PAGAMENTOS",
+  "CONSULTAS_SKILLS",
+  "CONSULTAS_AUSENCIAS",
+  "CONSULTAS_CRIAR",
+  "CONSULTAS_COMPARTILHAR",
+  "CONSULTAS_EXPORTAR",
+  "CONSULTAS_AGENDAR",
+  "CONSULTAS_IA",
 ]);
 
 /** Whether `code` is a native (seeded) feature — immutable code, not deletable. */
