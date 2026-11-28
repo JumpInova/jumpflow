@@ -22,6 +22,8 @@ import {
   weekLabel,
 } from "@/lib/timesheet/week";
 import { focusRing } from "@/lib/styles";
+import { isM365Enabled } from "@/lib/m365/config";
+import { buildSuggestionPrefill } from "@/lib/m365/calendar/prefill";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Novo Lançamento de Horas" };
@@ -142,13 +144,40 @@ export default async function NovoLancamentoPage({
 
   const batch = canBatch ? await getOnBehalfPickerData() : null;
 
+  // Microsoft 365 (M1): `?sugestao=<id>&projeto=<id>` pré-preenche o lançamento
+  // com uma sugestão PENDENTE do próprio consultor. Nada é gravado aqui.
+  let initialPrefill = null;
+  const suggestionId = typeof params.sugestao === "string" ? params.sugestao : null;
+  if (consultant && personal && suggestionId && isM365Enabled()) {
+    const { getOwnPendingSuggestion } = await import("@/lib/db/m365");
+    const suggestion = await getOwnPendingSuggestion(consultant.id, suggestionId);
+    if (suggestion) {
+      initialPrefill = buildSuggestionPrefill(
+        {
+          startAt: suggestion.startAt,
+          endAt: suggestion.endAt,
+          projectIds: suggestion.projectIds,
+          subject: suggestion.calendarEvent.subject,
+        },
+        typeof params.projeto === "string" ? params.projeto : null,
+        new Set(personal.projects.map((p) => p.id)),
+      );
+    }
+  }
+
   return (
     <div className="space-y-6">
       {header}
+      {initialPrefill ? (
+        <p className="text-sm text-medium" role="status">
+          Formulário preenchido a partir da sua agenda. Revise projeto, horário e descrição antes de enviar.
+        </p>
+      ) : null}
       <NewTimeEntryScreen
         historyHref={HISTORY_HREF}
         personal={personal}
         batch={batch}
+        initialPrefill={initialPrefill}
       />
     </div>
   );

@@ -134,18 +134,28 @@ conteúdo pessoal.
   - ser organizado por esse gestor;
   - ter exatamente **um** consultor participante, que esteja no escopo do gestor
     (`canTargetConsultant` ou equivalente no servidor);
-  - ter assunto que casa com `/(1:1|1-on-1|one on one|1on1|checkpoint|check-in)/i`
-    **ou** ter a categoria `JumpFlow`.
+  - ter assunto que casa com a regra abaixo **ou** ter a categoria `JumpFlow` **na
+    caixa do gestor organizador** (categoria é por caixa, guardada no sighting).
 
-  Tipo: `ONE_ON_ONE` se o assunto indicar 1:1, senão `CHECKPOINT`.
+  Regra exata do assunto (case-insensitive, com fronteiras):
+  - 1:1 → `(?<![\d:])1:1(?![\d:])|\b1-on-1\b|\bone on one\b|\b1on1\b`
+    ("1:1" não pode ter dígito nem `:` colado: "Daily 11:15", "Sync 21:10" e "1:10" **não** casam);
+  - checkpoint → a regra de 1:1 **ou** `\bcheckpoint\b|\bcheck-in\b` ("Checkpoints" não casa).
+
+  Tipo: `ONE_ON_ONE` se o assunto casar a regra de 1:1, senão `CHECKPOINT`.
 - **Rascunho de Checkpoint:**
   - criado `DRAFT` / `PRIVATE`, com consultor, gestor, `occurredAt` = início do
     evento e título = assunto;
   - vínculo com o evento: FK opcional nova ou tabela de link — decidir com o
     data modeler, migration aditiva;
   - idempotente: um rascunho por evento por consultor;
-  - evento cancelado → rascunho ainda DRAFT e sem conteúdo é marcado/removido (definir
-    e testar).
+  - remarcação: enquanto o rascunho é DRAFT, `occurredAt` acompanha sempre o início do
+    evento; o título acompanha o assunto só enquanto o rascunho não tem conteúdo
+    (notas/transcrição/áudio);
+  - evento cancelado → rascunho ainda DRAFT e sem conteúdo (notas/transcrição nulas ou só
+    espaços, sem áudio) vira `ARCHIVED`. O evento é cancelado quando a **visão do
+    organizador** diz cancelado (ou o organizador o remove da agenda) ou quando nenhum
+    sighting ativo resta; a visão de um participante sozinha não cancela.
 - **Sugestões de horas**, na conta de qualquer usuário conectado que seja consultor:
   - o evento passado da semana com participante externo cujo e-mail ou domínio casa
     com um contato/cliente de um projeto em que o consultor está **alocado** vira
@@ -162,7 +172,10 @@ conteúdo pessoal.
 - **Ingestão estreita, orientada a consulta.** Nada de sync da caixa inteira. Para
   cada Checkpoint em rascunho com evento já encerrado há menos de 7 dias e sem ata, o
   job consulta a caixa **do gestor**:
-  - mensagens com categoria `JumpFlow` recebidas desde o início do evento;
+  - mensagens com categoria `JumpFlow` recebidas desde o início do evento **que também
+    apontem para este checkpoint**: o consultor em from/to/cc **ou** o assunto do evento.
+    Decisão (M2): categoria sozinha não basta; sem essa amarra, a ata do 1:1 de um
+    consultor alimentaria o checkpoint de outro consultor do mesmo gestor;
   - mensagens recebidas entre o início do evento e +7 dias cujo assunto contenha o
     assunto do evento (normalizado, sem RE:/ENC:/FW:) **e** que tenham o consultor ou
     o gestor em from/to/cc.
@@ -208,6 +221,14 @@ conteúdo pessoal.
   mascarar → mesma geração de ata e cards da M2.
 - Máquina de estados persistida e testada:
   `PENDING → WAITING_TRANSCRIPT → GENERATING → DONE | NO_TRANSCRIPT | FAILED`.
+- Decisões (M3):
+  - consentimento por **conjunto de capacidades** (agenda + e-mail? + Teams?), não por
+    fases lineares: M1+Teams sem e-mail é válido; o pedido soma a capacidade nova às já
+    consentidas; o refresh recua em `consent_required` (sem Teams → sem e-mail → base);
+  - precedência: o job de atas por e-mail espera até 1 h após o fim (ou enquanto a
+    transcrição está em GENERATING) quando a reunião é Teams organizada pelo gestor com
+    Teams ativo; depois disso o e-mail segue e a transcrição só complementa (ação do gestor);
+  - job próprio `/api/jobs/m365-teams-transcripts` (CRON_SECRET).
 
 ### M4 — (próxima rodada, fora desta execução)
 - Notificações e aprovação via Teams.

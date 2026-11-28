@@ -667,6 +667,9 @@ enum IntegrationProviderKind {
   TEAMS
   /// Canal de ingestao de projetos vindos do CRM-Jumplabel (oportunidades ganhas).
   CRM_JUMPLABEL
+  /// Integracao Microsoft 365 (Graph, permissao delegada por usuario): agenda,
+  /// atas e transcricoes. Ver docs/m365/ESPECIFICACAO.md.
+  MICROSOFT_365
 }
 
 enum IntegrationEventStatus {
@@ -818,6 +821,8 @@ model User {
   opportunitiesDecided        Opportunity[]               @relation("OpportunityDecider")
   opportunitiesOwned          Opportunity[]               @relation("OpportunityOwner")
   casesDecided                Case[]                      @relation("CaseDecider")
+  // Microsoft 365 (M2): quem validou um card de Acao/proximo passo da ata.
+  checkpointActionItemsDecided CheckpointActionItem[]     @relation("CheckpointActionItemDecider")
   // Invitations this user created (actor side) and the invitation that created
   // this user on acceptance (at most one).
   invitationsSent             UserInvitation[]            @relation("InvitedBy")
@@ -840,6 +845,9 @@ model User {
   // Consultas (C3): agendamentos criados pelo usuario e uso do assistente de IA.
   consultaSchedulesOwned      ConsultaSchedule[]          @relation("ConsultaScheduleOwner")
   consultaAiUsage             ConsultaAiUsage[]           @relation("ConsultaAiUsageUser")
+  // Microsoft 365 (M1): conexao delegada do proprio usuario (opt-in). Removida
+  // em cascata com o usuario (tokens nunca sobrevivem ao dono).
+  m365Connection              M365Connection?
   createdAt                   DateTime                    @default(now())
   updatedAt                   DateTime                    @updatedAt
 }
@@ -1057,6 +1065,8 @@ model Consultant {
   // propostas de time. Ver CoeMember / CoeSquadMember.
   coeMembership       CoeMember?
   coeSquadMemberships CoeSquadMember[]
+  // Microsoft 365 (M1): sugestoes de lancamento de horas vindas da agenda.
+  m365TimeSuggestions M365TimeSuggestion[]
   createdAt           DateTime                       @default(now())
   updatedAt           DateTime                       @updatedAt
 }
@@ -2941,6 +2951,9 @@ enum NotificationEvent {
   PAYMENT_RELEASED_BY_PEOPLE // DP/People liberou pagamentos -> avisa o Financeiro
   SLA_DEADLINE_APPROACHING // job de SLA: etapa perto do prazo (warningBusinessDays)
   SLA_OVERDUE // job de SLA: etapa com prazo vencido
+  CHECKPOINT_MINUTES_READY // M365 (M2): ata do checkpoint gerada a partir do e-mail (so in-app, ao gestor)
+  CHECKPOINT_MINUTES_CHOICE // M365 (M2): mais de um e-mail candidato; o gestor escolhe (so in-app)
+  CHECKPOINT_TRANSCRIPT_MISSING // M365 (M3): sem transcricao do Teams; colar notas ou aguardar a ata por e-mail (so in-app)
 }
 
 /// Nivel de agregacao em que a regra dispara.
@@ -3328,11 +3341,22 @@ model Checkpoint {
   extractedAt         DateTime?
   status              CheckpointStatus           @default(DRAFT)
   visibility          CheckpointVisibility       @default(PRIVATE)
+  /// Microsoft 365 (M1): evento de agenda que originou este rascunho. Opcional;
+  /// SetNull preserva o checkpoint se o evento sair. Unico por (evento,
+  /// consultor): no maximo um rascunho por evento por consultor (idempotencia).
+  calendarEventId     String?
+  calendarEvent       CalendarEvent?             @relation(fields: [calendarEventId], references: [id], onDelete: SetNull)
   opportunities       Opportunity[]
   cases               Case[]
+  /// Microsoft 365 (M2): cards de Acao/proximo passo extraidos da ata.
+  actionItems         CheckpointActionItem[]
+  /// Microsoft 365 (M2): estado da busca da ata por e-mail + metadados da origem.
+  emailMinutes        CheckpointEmailMinutes?
+  teamsTranscript     CheckpointTeamsTranscript?
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
+  @@unique([calendarEventId, consultantId])
   @@index([consultantId])
   @@index([consultantId, occurredAt])
   @@index([managerUserId])
@@ -3959,4 +3983,287 @@ model ConsultaAiUsage {
 
   @@unique([userId, windowStart])
   @@index([windowStart])
+}
+
+// ── Microsoft 365 (M1: Conexao + Agenda) ─────────────────────────────────────
+// Ver docs/m365/ESPECIFICACAO.md. Permissao DELEGADA por usuario (opt-in),
+// consentimento incremental separado do login. Nunca armazena corpo de convite.
+
+/// Estado da conexao Microsoft 365 de um usuario.
+enum M365ConnectionStatus {
+  ACTIVE
+  PAUSED
+  REAUTH_REQUIRED
+  ERROR
+  DISCONNECTED
+}
+
+/// Conexao delegada de UM usuario com o Microsoft Graph. Tokens SEMPRE cifrados
+/// (field-encryption, AAD "M365Connection.accessToken"/"refreshToken"); ao
+/// desconectar, os tokens sao apagados (null) e o status vira DISCONNECTED.
+/// O lease (`syncLeaseUntil`/`syncLeaseOwner`) e o claim atomico da rodada de
+/// sync no banco: nenhuma trava em memoria (Railway pode ter varias instancias).
+model M365Connection {
+  id                    String               @id @default(cuid())
+  userId                String               @unique
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status                M365ConnectionStatus @default(ACTIVE)
+  /// Cifrados (enc:v1:...). Nunca logar nem expor ao cliente.
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  expiresAt             DateTime?
+  /// Escopos concedidos (como devolvidos pelo token endpoint).
+  scopes                String[]             @default([])
+  tenantId              String?
+  graphUserId           String?
+  /// mail/userPrincipalName conferido com o e-mail do usuario logado.
+  mailbox               String?
+  /// Cursor do delta de /me/calendarView (deltaLink opaco) + janela usada.
+  calendarDeltaLink     String?
+  calendarWindowStart   DateTime?
+  calendarWindowEnd     DateTime?
+  lastSyncAt            DateTime?
+  lastSyncStartedAt     DateTime?
+  /// Codigo curto e seguro (sem token, sem conteudo pessoal).
+  lastError             String?
+  lastErrorAt           DateTime?
+  syncLeaseUntil        DateTime?
+  syncLeaseOwner        String?
+  connectedAt           DateTime             @default(now())
+  sightings             CalendarEventSighting[]
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@index([status, lastSyncAt])
+}
+
+/// Evento de agenda (metadados apenas), unico por iCalUId (o mesmo evento visto
+/// por varias contas e UM registro). NUNCA guarda o corpo do convite. Eventos
+/// privados/confidenciais e series master sao descartados antes de chegar aqui.
+model CalendarEvent {
+  id              String                  @id @default(cuid())
+  iCalUId         String                  @unique
+  subject         String?
+  startAt         DateTime
+  endAt           DateTime
+  isAllDay        Boolean                 @default(false)
+  organizerEmail  String?
+  organizerName   String?
+  /// [{ email, name, type, response }] — sem corpo, sem anexos.
+  attendees       Json                    @default("[]")
+  /// Link de reuniao Teams SOMENTE de host permitido (teams.microsoft.com...).
+  joinUrl         String?
+  onlineMeetingId String?
+  /// Redigido: o ORGANIZADOR marcou o evento como privado/confidencial e ha
+  /// Checkpoint vinculado (assunto/participantes limpos). Enquanto preenchido,
+  /// so a visao do organizador volta a gravar conteudo (participante nao reescreve).
+  redactedAt      DateTime?
+  /// Cancelado na visao do ORGANIZADOR (isCancelled ou removido da agenda dele)
+  /// ou quando nenhum sighting ativo resta. A visao de um participante sozinha
+  /// nao cancela o evento enquanto outra caixa ainda o tem ativo.
+  isCancelled     Boolean                 @default(false)
+  sightings       CalendarEventSighting[]
+  checkpoints     Checkpoint[]
+  timeSuggestions M365TimeSuggestion[]
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([startAt])
+  @@index([organizerEmail])
+}
+
+/// Ocorrencia de um CalendarEvent na agenda de UMA conexao (id do Graph e por
+/// caixa). `removedAt` marca que o evento saiu da agenda dessa conta (@removed).
+/// `categories` e `isCancelled` sao POR CAIXA (cada usuario categoriza e ve o
+/// cancelamento na propria agenda).
+model CalendarEventSighting {
+  id              String         @id @default(cuid())
+  calendarEventId String
+  calendarEvent   CalendarEvent  @relation(fields: [calendarEventId], references: [id], onDelete: Cascade)
+  connectionId    String
+  connection      M365Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  graphEventId    String
+  webLink         String?
+  responseStatus  String?
+  categories      String[]       @default([])
+  isCancelled     Boolean        @default(false)
+  lastSeenAt      DateTime
+  removedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([connectionId, graphEventId])
+  @@index([calendarEventId])
+}
+
+/// Estado de uma sugestao de horas vinda da agenda. A sugestao NUNCA lanca
+/// horas: so pre-preenche o formulario. "Ja lancado" e derivado na leitura.
+enum M365TimeSuggestionStatus {
+  PENDING
+  DISMISSED
+}
+
+/// Sugestao de lancamento (projeto, data, duracao) para o consultor a partir de
+/// um evento passado com participante externo de cliente de projeto alocado.
+/// `projectIds` > 1 = o consultor escolhe. Unica por (consultor, evento).
+model M365TimeSuggestion {
+  id              String                   @id @default(cuid())
+  consultantId    String
+  consultant      Consultant               @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  calendarEventId String
+  calendarEvent   CalendarEvent            @relation(fields: [calendarEventId], references: [id], onDelete: Cascade)
+  /// Data-calendario (America/Sao_Paulo) gravada a meia-noite UTC, mesma
+  /// convencao de TimeEntry.date.
+  date            DateTime                 @db.Date
+  startAt         DateTime
+  endAt           DateTime
+  minutes         Int
+  projectIds      String[]                 @default([])
+  /// EMAIL (contato exato do cliente) | DOMAIN (dominio do cliente).
+  matchKind       String
+  status          M365TimeSuggestionStatus @default(PENDING)
+  decidedAt       DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  @@unique([consultantId, calendarEventId])
+  @@index([consultantId, date])
+}
+
+// ── Microsoft 365 (M2: E-mail de atas -> ata do Checkpoint -> cards) ─────────
+// Ingestao ESTREITA orientada a consulta: so a caixa do GESTOR do Checkpoint e
+// consultada, so para rascunhos vinculados a evento encerrado ha < 7 dias. O
+// e-mail bruto NUNCA e guardado: so os metadados da origem (internetMessageId,
+// webLink, recebido em). O texto-fonte guardado (Checkpoint.transcription) ja
+// esta MASCARADO (e-mail, telefone, CPF, CNPJ).
+
+/// Estado da busca da ata por e-mail de um Checkpoint.
+/// SEARCHING = ainda procurando (job reconsulta); AMBIGUOUS = mais de uma
+/// candidata empatada, o gestor escolhe na tela (nenhuma candidata e guardada);
+/// DONE = ata gravada; FAILED = erro definitivo (ex.: corpo/anexos sem texto).
+enum CheckpointEmailMinutesStatus {
+  SEARCHING
+  AMBIGUOUS
+  DONE
+  FAILED
+}
+
+/// Busca/origem da ata por e-mail de UM Checkpoint (1:1 com o Checkpoint).
+/// `internetMessageId` e UNICO: um e-mail alimenta no maximo um Checkpoint
+/// (idempotencia garantida pelo banco). Nenhum campo guarda assunto, remetente,
+/// corpo ou anexo do e-mail. `aiSummary` = a ata foi resumida pela IA (false =
+/// IA indisponivel, so o texto-fonte mascarado foi importado).
+model CheckpointEmailMinutes {
+  id                 String                       @id @default(cuid())
+  checkpointId       String                       @unique
+  checkpoint         Checkpoint                   @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  status             CheckpointEmailMinutesStatus @default(SEARCHING)
+  internetMessageId  String?                      @unique
+  /// Link do Outlook (so https em host da Microsoft).
+  webLink            String?
+  receivedAt         DateTime?
+  attachmentsUsed    Int                          @default(0)
+  /// Anexos PDF sem texto extraivel (escaneados) — nao suportados.
+  attachmentsSkipped Int                          @default(0)
+  aiSummary          Boolean                      @default(false)
+  attempts           Int                          @default(0)
+  lastCheckedAt      DateTime?
+  /// Codigo curto e seguro (sem conteudo pessoal).
+  lastError          String?
+  completedAt        DateTime?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  @@index([status, lastCheckedAt])
+}
+
+/// Estado de um card de Acao/proximo passo: PENDING (sugerido pela IA, aguarda o
+/// gestor), ACCEPTED (aceito), DONE (concluido), DISMISSED (descartado).
+enum CheckpointActionItemStatus {
+  PENDING
+  ACCEPTED
+  DONE
+  DISMISSED
+}
+
+/// Card de Acao/proximo passo extraido da ata de um Checkpoint (M365 M2). Herda
+/// a visibilidade do Checkpoint (PRIVATE: o consultor nao ve). Nasce PENDING e
+/// so muda por clique humano. `ownerText`/`dueText`/`title`/`sourceQuote` sao
+/// texto livre da ata ja DESMASCARADO (dados reais; a IA so viu o texto
+/// mascarado); `dueDate` so quando a ata traz uma data inequivoca (AAAA-MM-DD).
+model CheckpointActionItem {
+  id              String                     @id @default(cuid())
+  checkpointId    String
+  checkpoint      Checkpoint                 @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  title           String
+  ownerText       String?
+  dueDate         DateTime?                  @db.Date
+  dueText         String?
+  sourceQuote     String?
+  aiGenerated     Boolean                    @default(true)
+  status          CheckpointActionItemStatus @default(PENDING)
+  decidedByUserId String?
+  decidedBy       User?                      @relation("CheckpointActionItemDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([checkpointId, status])
+}
+
+// ── Microsoft 365 (M3): transcrição do Teams → ata do Checkpoint ─────────────
+// O VTT bruto NUNCA e guardado (so em memoria durante a rodada). Guardado: a ata
+// (Checkpoint.notes), o texto-fonte MASCARADO (Checkpoint.transcription) e os
+// contadores abaixo. Nenhum campo guarda nome/fala de participante.
+
+/// Maquina de estados da transcricao do Teams de um Checkpoint.
+/// PENDING = aguardando a 1a consulta (10 min apos o fim); WAITING_TRANSCRIPT =
+/// sem transcricao ainda (backoff 15/30/60/120 min ate 6 h; 403 = 24 h);
+/// GENERATING = transcricao em memoria, gerando a ata (com lease); DONE = ata
+/// gravada/complementada; NO_TRANSCRIPT = nenhuma transcricao ate 6 h (gestor
+/// avisado); FAILED = acesso negado definitivo, transcricao grande demais,
+/// checkpoint mudou/ja tinha ata, reuniao nao organizada pelo gestor.
+enum CheckpointTranscriptStatus {
+  PENDING
+  WAITING_TRANSCRIPT
+  GENERATING
+  DONE
+  NO_TRANSCRIPT
+  FAILED
+}
+
+/// GENERATE = a transcricao gerou a ata (rascunho sem conteudo); SUPPLEMENT =
+/// complementou uma ata/notas existentes por acao do gestor.
+enum CheckpointTranscriptMode {
+  GENERATE
+  SUPPLEMENT
+}
+
+/// Transcricao do Teams de UM Checkpoint (1:1 com o Checkpoint). Claim atomico
+/// por `leaseOwner`/`leaseUntil` (updateMany condicional): varias instancias
+/// nunca processam o mesmo registro ao mesmo tempo.
+model CheckpointTeamsTranscript {
+  id              String                     @id @default(cuid())
+  checkpointId    String                     @unique
+  checkpoint      Checkpoint                 @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  status          CheckpointTranscriptStatus @default(PENDING)
+  mode            CheckpointTranscriptMode?
+  attempts        Int                        @default(0)
+  nextAttemptAt   DateTime?
+  lastCheckedAt   DateTime?
+  /// Codigo curto e seguro (sem conteudo pessoal), ex.: access_denied.
+  lastError       String?
+  /// Instante do ultimo 403: nenhuma consulta (job OU botao) por 24 h a partir
+  /// dele, qualquer que seja o status.
+  accessDeniedAt  DateTime?
+  leaseOwner      String?
+  leaseUntil      DateTime?
+  transcriptsUsed Int                        @default(0)
+  truncated       Boolean                    @default(false)
+  aiSummary       Boolean                    @default(false)
+  completedAt     DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([status, nextAttemptAt])
 }

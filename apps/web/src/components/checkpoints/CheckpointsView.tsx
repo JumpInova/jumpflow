@@ -16,6 +16,7 @@ import {
   type CheckpointType,
 } from "@/lib/checkpoint/types";
 import type { CheckpointFlags } from "@/lib/checkpoint/flags";
+import type { CheckpointM365View } from "@/lib/checkpoint/action-items";
 import { CheckpointCard } from "./CheckpointCard";
 import { CheckpointComposer } from "./CheckpointComposer";
 import { SearchableSelect } from "@/components/ui/SearchableSelect";
@@ -30,6 +31,8 @@ export interface CheckpointsViewProps {
   consultants: CheckpointOption[];
   projects: CheckpointOption[];
   flags: CheckpointFlags;
+  /** Microsoft 365 (M2), por checkpoint; ausente com a integração desligada. */
+  m365ById?: Record<string, CheckpointM365View>;
 }
 
 const EMPTY_INSIGHTS: CheckpointInsights = { opportunities: [], cases: [] };
@@ -48,6 +51,7 @@ export function CheckpointsView({
   consultants,
   projects,
   flags,
+  m365ById,
 }: CheckpointsViewProps) {
   const { feedback, notify } = useFeedback();
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("ALL");
@@ -155,6 +159,7 @@ export function CheckpointsView({
                 insights={insightsById[item.id] ?? EMPTY_INSIGHTS}
                 flags={flags}
                 notify={notify}
+                m365={m365ById?.[item.id]}
               />
             ))}
           </ol>

@@ -6,6 +6,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { TimesheetWeekView } from "@/components/timesheet/TimesheetWeekView";
 import { HorasConsultaPanel } from "@/components/timesheet/HorasConsultaPanel";
 import { OnBehalfConsultantPicker } from "@/components/timesheet/OnBehalfConsultantPicker";
+import { Microsoft365TimeSuggestionsPanel } from "@/components/m365/M365TimeSuggestionsPanel";
+import { isM365Enabled } from "@/lib/m365/config";
 import { requireUser } from "@/lib/auth/guards";
 import { can } from "@/lib/auth/permissions";
 import { SCREEN_CODES } from "@/lib/auth/permission-codes";
@@ -19,6 +21,7 @@ import {
   addDays,
   monthRangeOf,
   parseWeekParam,
+  toIsoDate,
 } from "@/lib/timesheet/week";
 import { parseTimesheetFilter } from "@/lib/timesheet/filters";
 import {
@@ -201,6 +204,9 @@ export async function HorasScreen({
 
   // Personal weekly editor — for the acting consultant (self or on-behalf target).
   let editor = null;
+  // Microsoft 365 (M1): sugestões da agenda do PRÓPRIO consultor (nunca no
+  // modo on-behalf). Só pré-preenchem o formulário; nada é lançado sozinho.
+  let m365Suggestions = null;
   if (editorConsultant) {
     const weekStart = parseWeekParam(params.semana);
     // Safe fallback: an invalid filter value is dropped, defaults take over.
@@ -244,6 +250,23 @@ export async function HorasScreen({
       prisma,
       week.rows.map((row) => row.projectId),
     );
+    if (isM365Enabled() && consultant && !onBehalfTarget) {
+      const { listPendingTimeSuggestions } = await import("@/lib/db/m365");
+      const suggestions = await listPendingTimeSuggestions(
+        consultant.id,
+        weekStart,
+        weekEnd,
+        new Set(projects.map((p) => p.id)),
+      );
+      m365Suggestions = (
+        <Microsoft365TimeSuggestionsPanel
+          suggestions={suggestions}
+          weekStart={toIsoDate(weekStart)}
+          canPrefill={canOpenNewEntryScreen}
+          presentation={presentation}
+        />
+      );
+    }
     editor = (
       <TimesheetWeekView
         mode="db"
@@ -308,6 +331,7 @@ export async function HorasScreen({
     <div className="space-y-6">
       {header}
       {onBehalfPicker}
+      {m365Suggestions}
       {editor}
       {panel}
     </div>

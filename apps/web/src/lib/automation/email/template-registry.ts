@@ -65,6 +65,9 @@ export const NOTIFICATION_EVENTS = [
   "PAYMENT_RELEASED_BY_PEOPLE",
   "SLA_DEADLINE_APPROACHING",
   "SLA_OVERDUE",
+  "CHECKPOINT_MINUTES_READY",
+  "CHECKPOINT_MINUTES_CHOICE",
+  "CHECKPOINT_TRANSCRIPT_MISSING",
 ] as const;
 
 export type NotificationEventName = (typeof NOTIFICATION_EVENTS)[number];
@@ -81,6 +84,7 @@ export const TEMPLATE_GROUPS = [
   "Acesso",
   "Feed",
   "SLA",
+  "Pessoas",
 ] as const;
 export type TemplateGroup = (typeof TEMPLATE_GROUPS)[number];
 
@@ -973,6 +977,34 @@ const DEFINITIONS: Record<NotificationEventName, TemplateDefinition> = {
       ),
     }),
   }),
+  CHECKPOINT_MINUTES_READY: {
+    event: "CHECKPOINT_MINUTES_READY",
+    label: "Ata do checkpoint pronta (Microsoft 365)",
+    group: "Pessoas",
+    description: "A ata de um 1:1/checkpoint foi gerada a partir do e-mail do gestor.",
+    audience: "Gestor que registra o checkpoint",
+    sendsEmail: false,
+    reason: "Aviso só no sino (in-app): o conteúdo do 1:1 é sensível e não sai por e-mail.",
+  },
+  CHECKPOINT_MINUTES_CHOICE: {
+    event: "CHECKPOINT_MINUTES_CHOICE",
+    label: "Escolher o e-mail da ata (Microsoft 365)",
+    group: "Pessoas",
+    description: "Mais de um e-mail pode ser a ata do checkpoint; o gestor escolhe na tela.",
+    audience: "Gestor que registra o checkpoint",
+    sendsEmail: false,
+    reason: "Aviso só no sino (in-app): a escolha acontece na tela do checkpoint.",
+  },
+  CHECKPOINT_TRANSCRIPT_MISSING: {
+    event: "CHECKPOINT_TRANSCRIPT_MISSING",
+    label: "Sem transcrição do Teams (Microsoft 365)",
+    group: "Pessoas",
+    description:
+      "A transcrição do Teams de um 1:1/checkpoint não ficou disponível: o gestor cola as notas ou aguarda a ata por e-mail.",
+    audience: "Gestor que registra o checkpoint",
+    sendsEmail: false,
+    reason: "Aviso só no sino (in-app): o conteúdo do 1:1 é sensível e não sai por e-mail.",
+  },
 };
 
 export function getTemplateDefinition(event: NotificationEventName): TemplateDefinition {

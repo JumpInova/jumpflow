@@ -21,6 +21,8 @@ import {
   isCheckpointEnabled,
 } from "@/lib/checkpoint/flags";
 import type { CheckpointInsights } from "@/lib/checkpoint/types";
+import type { CheckpointM365View } from "@/lib/checkpoint/action-items";
+import { isM365Enabled } from "@/lib/m365/config";
 
 export const metadata: Metadata = { title: "Checkpoints / 1-on-1" };
 
@@ -89,6 +91,19 @@ export default async function CheckpointsPage() {
     }
   }
 
+  // Microsoft 365 (M2): ata por e-mail + cards de ação, só para quem vê o cru
+  // (o consultor avaliado nunca recebe) e só com a integração ligada.
+  let m365ById: Record<string, CheckpointM365View> | undefined;
+  if (isM365Enabled()) {
+    const { resolveDbUser } = await import("@/lib/db/users");
+    const { loadCheckpointM365Views } = await import("@/lib/db/m365-minutes");
+    const viewer = await resolveDbUser(user);
+    m365ById = await loadCheckpointM365Views(
+      items.filter((item) => item.canViewRaw).map((item) => item.id),
+      viewer?.id ?? null,
+    );
+  }
+
   const isManager = hasRole(user, [
     "ADMIN",
     "PEOPLE",
@@ -111,6 +126,7 @@ export default async function CheckpointsPage() {
         consultants={consultants}
         projects={projects}
         flags={flags}
+        m365ById={m365ById}
       />
     </div>
   );

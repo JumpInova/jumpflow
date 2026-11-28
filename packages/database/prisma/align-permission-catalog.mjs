@@ -96,6 +96,7 @@ export const PERMISSION_CATALOG_ALIGNMENT = [
   { code: "FINANCEIRO_FECHAMENTO", name: "Fechamento mensal", module: "Financeiro", parent: "FINANCEIRO", sortOrder: 112 },
   { code: "PAGAMENTOS", name: "Pagamentos", module: "Financeiro", parent: null, sortOrder: 113 },
   { code: "ADMIN_ACESSOS", name: "Acessos", module: "Administração", parent: null, sortOrder: 120 },
+  { code: "INTEGRACOES_M365", name: "Integração Microsoft 365", module: "Administração", parent: "ADMIN_ACESSOS", sortOrder: 120 },
   { code: "CONFIGURACOES_PERMISSOES", name: "Matriz de Permissões", module: "Administração", parent: null, sortOrder: 121 },
   { code: "CONFIGURACOES_NOTIFICACOES", name: "Regras de Notificação", module: "Administração", parent: null, sortOrder: 122 },
   { code: "CONFIGURACOES_FERIADOS", name: "Feriados", module: "Administração", parent: null, sortOrder: 123 },

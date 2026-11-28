@@ -56,6 +56,8 @@ export interface AppShellProps {
    * a right gutter free so the docked assistant never sits on top of a grid.
    */
   assistantDocked?: boolean;
+  /** Microsoft 365 (M1): link da conexão pessoal no topbar (flag ligada). */
+  integrationsHref?: string;
   children: React.ReactNode;
 }
 
@@ -72,6 +74,7 @@ export function AppShell({
   notifications = [],
   unreadCount = 0,
   assistantDocked = false,
+  integrationsHref,
   children,
 }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -187,6 +190,7 @@ export function AppShell({
           onMenuClick={() => setMobileOpen(true)}
           notifications={notifications}
           unreadCount={unreadCount}
+          integrationsHref={integrationsHref}
         />
         <main
           className={cn(

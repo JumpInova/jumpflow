@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AI_MODELS, type AiModel } from "@/lib/ai/provider";
+import { stripCodeFence } from "@/lib/m365/minutes/text-safe";
 
 /**
  * Checkpoint Intelligence — pipeline de IA (Melhoria #4, FATIA 4).
@@ -157,7 +158,8 @@ export type ParseResult =
 function stripToJson(raw: string): string {
   let s = raw.trim();
   // Remove fences ```json / ``` de início/fim.
-  s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  // Sem regex: `\s*```$` reescaneia longas sequências de espaço (quadrático).
+  s = stripCodeFence(s);
   // Isola do primeiro `{` ao último `}` (tolera prosa ao redor).
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");

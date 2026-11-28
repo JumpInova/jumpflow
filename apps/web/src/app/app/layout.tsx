@@ -16,6 +16,7 @@ import {
   matrixAllows,
 } from "@/lib/auth/permission-codes";
 import { findActiveNav, navPermissionCodes } from "@/lib/navigation";
+import { M365_ACCOUNT_PATH, isM365Enabled } from "@/lib/m365/config";
 
 export default async function AppLayout({
   children,
@@ -123,6 +124,7 @@ export default async function AppLayout({
       notifications={notifications}
       unreadCount={unreadCount}
       assistantDocked={nathaliaEnabled}
+      integrationsHref={isM365Enabled() ? M365_ACCOUNT_PATH : undefined}
     >
       {children}
       {/* Nathal.IA — contextual assistant, authenticated app only, gated by the

@@ -15,10 +15,7 @@ import {
 } from "@/lib/db/checkpoint";
 import { resolveDbUser } from "@/lib/db/users";
 import { canManageCheckpoint } from "@/lib/checkpoint/visibility";
-import {
-  isCheckpointAiEnabled,
-  isCheckpointVoiceEnabled,
-} from "@/lib/checkpoint/flags";
+import { isCheckpointVoiceEnabled } from "@/lib/checkpoint/flags";
 import {
   CHECKPOINT_AUDIO_BUCKET,
   getCheckpointAudioStorageProvider,
@@ -31,15 +28,7 @@ import {
   transcribeAudio,
 } from "@/lib/transcription/transcribe";
 import { getAiTextProvider } from "@/lib/ai/provider";
-import { recordAiUsage } from "@/lib/ai/log";
-import {
-  CHECKPOINT_EXTRACTION_MODEL,
-  buildExtractionPrompt,
-  mapExtraction,
-  parseExtraction,
-  resolveExtractionBody,
-  EXTRACTION_SYSTEM_PROMPT,
-} from "@/lib/checkpoint/extraction";
+import { runCheckpointExtraction } from "@/lib/checkpoint/run-extraction";
 import {
   checkpointArchiveSchema,
   checkpointCreateSchema,
@@ -823,32 +812,6 @@ export type ExtractionResult = {
 };
 
 /**
- * Garante uma janela semanal válida para a SkillSuggestion (o model exige
- * weekStart/weekEnd não nulos). Usa a janela do checkpoint quando presente;
- * senão deriva da semana de `occurredAt` (segunda→domingo, UTC). Puro o
- * suficiente para reuso, mas mantido local à action.
- */
-function resolveSkillWindow(row: {
-  weekStart: Date | null;
-  weekEnd: Date | null;
-  occurredAt: Date;
-}): { weekStart: Date; weekEnd: Date } {
-  if (row.weekStart && row.weekEnd) {
-    return { weekStart: row.weekStart, weekEnd: row.weekEnd };
-  }
-  const base = new Date(row.occurredAt);
-  const day = base.getUTCDay(); // 0=domingo
-  const diffToMonday = (day + 6) % 7;
-  const weekStart = new Date(
-    Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()),
-  );
-  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
-  return { weekStart, weekEnd };
-}
-
-/**
  * Extrai insights (skills/oportunidades/cases) do corpo do checkpoint via IA.
  * RBAC: requer CHECKPOINT.edit + autoria/gestão da linha (loadManageable). A IA
  * SUGERE; tudo nasce PENDING para curadoria humana.
@@ -860,6 +823,8 @@ function resolveSkillWindow(row: {
  * Idempotência: ao reprocessar, descartamos antes os candidatos PENDING
  * aiGenerated=true DESTE checkpoint (Opportunity/Case) e re-upsertamos as Skills
  * (respeitando @@unique [consultantId, weekStart, suggestedName]) — sem duplicar.
+ * O núcleo vive em `lib/checkpoint/run-extraction.ts` (também usado pelo job de
+ * atas do Microsoft 365).
  */
 export async function extractCheckpointInsights(
   checkpointId: string,
@@ -882,186 +847,29 @@ export async function extractCheckpointInsights(
       cases: 0,
     };
 
-    // Flag F4 off → IA indisponível (honesto), sem tocar extractionStatus.
-    if (!isCheckpointAiEnabled()) {
+    const actor = await resolveDbUser(await requireUser());
+    const result = await runCheckpointExtraction(
+      { ...row, id: checkpointId },
+      { actorUserId: actor?.id ?? null, provider: getAiTextProvider() },
+    );
+    if (result.status === "unavailable") {
       return { ok: true, data: empty };
     }
-
-    // Sem corpo a analisar → nada a fazer (não é falha de IA).
-    const body = resolveExtractionBody({
-      transcription: row.transcription,
-      notes: row.notes,
-    });
-    if (!body.trim()) {
-      return { ok: true, data: empty };
-    }
-
-    const provider = getAiTextProvider();
-    const prompt = buildExtractionPrompt({
-      transcription: row.transcription,
-      notes: row.notes,
-      type: row.type,
-    });
-    const raw = await provider.complete(prompt, {
-      model: CHECKPOINT_EXTRACTION_MODEL,
-      system: EXTRACTION_SYSTEM_PROMPT,
-      maxTokens: 1500,
-      entityType: "Checkpoint",
-      entityId: checkpointId,
-    });
-
-    // Provider noop / indisponível → null. NÃO mexe no status; honesto.
-    if (raw === null) {
-      return { ok: true, data: empty };
-    }
-
-    const parsed = parseExtraction(raw);
-    if (!parsed.ok) {
-      // Parse inválido → FAILED + log de uso da IA (sem corpo cru).
-      await prisma.checkpoint.update({
-        where: { id: checkpointId },
-        data: { extractionStatus: "FAILED" },
-      });
-      await recordAiUsage({
-        feature: "CHECKPOINT_EXTRACTION",
-        model: CHECKPOINT_EXTRACTION_MODEL,
-        entityType: "Checkpoint",
-        entityId: checkpointId,
-        status: "FAILED",
-        error: parsed.reason,
-      });
-      await audit(
-        checkpointId,
-        "CHECKPOINT_EXTRACTION_FAILED",
-        null,
-        { reason: parsed.reason },
-      );
+    if (result.status === "failed") {
       return {
         ok: false,
         error: "UNEXPECTED",
         message: "A IA retornou um resultado invalido. Tente novamente.",
       };
     }
-
-    const { weekStart, weekEnd } = resolveSkillWindow(row);
-    const mapped = mapExtraction(parsed.data, {
-      checkpointId,
-      consultantId: row.consultantId,
-      weekStart,
-      weekEnd,
-      relatedProjectId: row.relatedProjectId,
-    });
-
-    await prisma.$transaction(async (tx) => {
-      // Idempotência: descarta candidatos PENDING aiGenerated DESTE checkpoint
-      // antes de recriar (reprocessar não duplica).
-      await tx.opportunity.deleteMany({
-        where: {
-          sourceCheckpointId: checkpointId,
-          aiGenerated: true,
-          status: "PENDING",
-        },
-      });
-      await tx.case.deleteMany({
-        where: {
-          sourceCheckpointId: checkpointId,
-          aiGenerated: true,
-          status: "PENDING",
-        },
-      });
-
-      for (const s of mapped.skills) {
-        // Skills via SkillSuggestion existente: upsert idempotente respeitando
-        // o @@unique [consultantId, weekStart, suggestedName].
-        await tx.skillSuggestion.upsert({
-          where: {
-            consultantId_weekStart_suggestedName: {
-              consultantId: s.consultantId,
-              weekStart: s.weekStart,
-              suggestedName: s.suggestedName,
-            },
-          },
-          update: {
-            suggestedCategory: s.suggestedCategory,
-            suggestedLevel: s.suggestedLevel,
-            evidenceSummary: s.evidenceSummary,
-            sourceEntryIds: s.sourceEntryIds,
-            status: "PENDING",
-            decidedAt: null,
-          },
-          create: {
-            consultantId: s.consultantId,
-            weekStart: s.weekStart,
-            weekEnd: s.weekEnd,
-            suggestedName: s.suggestedName,
-            suggestedCategory: s.suggestedCategory,
-            suggestedLevel: s.suggestedLevel,
-            evidenceSummary: s.evidenceSummary,
-            sourceEntryIds: s.sourceEntryIds,
-          },
-        });
-      }
-
-      for (const o of mapped.opportunities) {
-        await tx.opportunity.create({
-          data: {
-            sourceCheckpointId: o.sourceCheckpointId,
-            consultantId: o.consultantId,
-            relatedProjectId: o.relatedProjectId,
-            kind: o.kind,
-            title: o.title,
-            description: o.description,
-            priority: o.priority,
-            sourceQuote: o.sourceQuote,
-            aiGenerated: true,
-            status: "PENDING",
-          },
-        });
-      }
-
-      for (const c of mapped.cases) {
-        await tx.case.create({
-          data: {
-            sourceCheckpointId: c.sourceCheckpointId,
-            consultantId: c.consultantId,
-            relatedProjectId: c.relatedProjectId,
-            title: c.title,
-            summary: c.summary,
-            outcome: c.outcome,
-            sourceQuote: c.sourceQuote,
-            aiGenerated: true,
-            status: "PENDING",
-          },
-        });
-      }
-
-      await tx.checkpoint.update({
-        where: { id: checkpointId },
-        data: { extractionStatus: "DONE", extractedAt: new Date() },
-      });
-    });
-
-    await recordAiUsage({
-      feature: "CHECKPOINT_EXTRACTION",
-      model: CHECKPOINT_EXTRACTION_MODEL,
-      entityType: "Checkpoint",
-      entityId: checkpointId,
-      status: "SUCCESS",
-    });
-    // Auditamos só contagens — nunca o corpo cru nem os trechos extraídos.
-    await audit(checkpointId, "CHECKPOINT_EXTRACTED", null, {
-      skills: mapped.skills.length,
-      opportunities: mapped.opportunities.length,
-      cases: mapped.cases.length,
-    });
     revalidatePath(CHECKPOINT_PATH);
     return {
       ok: true,
       data: {
         unavailable: false,
-        skills: mapped.skills.length,
-        opportunities: mapped.opportunities.length,
-        cases: mapped.cases.length,
+        skills: result.skills,
+        opportunities: result.opportunities,
+        cases: result.cases,
       },
     };
   } catch (error) {

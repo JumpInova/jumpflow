@@ -70,6 +70,11 @@ export interface NewTimeEntryScreenProps {
    * a aba é apenas cosmético.
    */
   batch: OnBehalfPickerData | null;
+  /**
+   * Pré-preenchimento inicial do lançamento individual (ex.: sugestão da agenda
+   * do Microsoft 365). Só preenche o formulário; o consultor revisa e envia.
+   */
+  initialPrefill?: Partial<TimeEntryFormValue> | null;
 }
 
 const labelClass = "mb-1 block text-xs font-semibold text-medium";
@@ -105,6 +110,7 @@ export function NewTimeEntryScreen({
   historyHref,
   personal,
   batch,
+  initialPrefill = null,
 }: NewTimeEntryScreenProps) {
   const router = useRouter();
   const { feedback, notify } = useFeedback();
@@ -123,7 +129,7 @@ export function NewTimeEntryScreen({
     value: TimeEntryFormValue;
   } | null>(null);
   const [prefill, setPrefill] = useState<Partial<TimeEntryFormValue> | null>(
-    null,
+    initialPrefill,
   );
 
   function composeRemainder() {
